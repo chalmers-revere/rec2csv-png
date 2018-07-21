@@ -47,7 +47,7 @@ section to your `docker-compose.yml` file to let Docker build this software for 
 ```yml
     rec2csv_png:
         build:
-            context: https://github.com/chalmers-revere/rec2csv+png.git
+            context: https://github.com/chalmers-revere/rec2csv-png.git
             dockerfile: Dockerfile.amd64
         restart: on-failure
         volumes:
