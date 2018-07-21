@@ -45,7 +45,7 @@ To run this microservice using `docker-compose`, you can simply add the followin
 section to your `docker-compose.yml` file to let Docker build this software for you:
 
 ```yml
-    rec2csv+png:
+    rec2csv_png:
         build:
             context: https://github.com/chalmers-revere/rec2csv+png.git
             dockerfile: Dockerfile.amd64
