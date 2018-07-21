@@ -41,10 +41,12 @@ we cannot provide and distribute pre-built Docker images. Therefore, we provide
 the build instructions in a `Dockerfile` that can be easily integrated in a
 `docker-compose.yml` file.
 
-To run this microservice using `docker-compose`, you can simply add the following
-section to your `docker-compose.yml` file to let Docker build this software for you:
+To run this microservice using `docker-compose`, you can use the following
+`docker-compose.yml` file to let Docker build this software for you:
 
 ```yml
+version: '2'
+services:
     rec2csv_png:
         build:
             context: https://github.com/chalmers-revere/rec2csv-png.git
