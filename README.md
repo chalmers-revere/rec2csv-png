@@ -58,6 +58,12 @@ services:
         command: "--rec=YourRecording.rec --odvd=YourMessageSpec.odvd"
 ```
 
+When you built your Docker image named `transcoder`, you can also call it as follows:
+
+```
+docker run --rm -ti --init -v $PWD:/opt/data -w /opt/data transcoder --rec=YourRecording.rec --odvd=YourMessageSpec.odvd
+```
+
 The current folder `.` is shared into the Docker container to access the recording
 file `YourRecording.rec` and the message specification file `YourMessageSpec.odvd`.
 
