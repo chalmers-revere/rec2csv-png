@@ -19,8 +19,8 @@ project(rec2csv+png)
 
 ################################################################################
 # Defining the relevant versions of OpenDLV Standard Message Set and libcluon.
-set(OPENDLV_STANDARD_MESSAGE_SET opendlv-standard-message-set-v0.9.5.odvd)
-set(CLUON_COMPLETE cluon-complete-v0.0.105.hpp)
+set(OPENDLV_STANDARD_MESSAGE_SET opendlv-standard-message-set-v0.9.6.odvd)
+set(CLUON_COMPLETE cluon-complete-v0.0.107.hpp)
 
 ################################################################################
 # Set the search path for .cmake files.
@@ -90,6 +90,10 @@ set(LIBRARIES ${LIBRARIES} ${OPENH264_LIBRARIES})
 find_package(Libyuv REQUIRED)
 include_directories(SYSTEM ${YUV_INCLUDE_DIRS})
 set(LIBRARIES ${LIBRARIES} ${YUV_LIBRARIES})
+
+find_package(Libvpx REQUIRED)
+include_directories(SYSTEM ${VPX_INCLUDE_DIRS})
+set(LIBRARIES ${LIBRARIES} ${VPX_LIBRARIES})
 
 ################################################################################
 # Create executable.

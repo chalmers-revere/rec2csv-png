@@ -1,6 +1,6 @@
 // This is an auto-generated header-only single-file distribution of libcluon.
-// Date: Thu, 19 Jul 2018 20:35:46 +0200
-// Version: 0.0.105
+// Date: Sun, 29 Jul 2018 21:28:50 +0200
+// Version: 0.0.107
 //
 //
 // Implementation of N4562 std::experimental::any (merged into C++17) for C++11 compilers.
@@ -7222,6 +7222,21 @@ class LIBCLUON_API EnvelopeConverter {
      */
     std::string getProtoEncodedEnvelopeFromJSONWithoutTimeStamps(const std::string &json, int32_t messageIdentifier, uint32_t senderStamp) noexcept;
 
+    /**
+     * This method transforms a given JSON representation into a Proto-encoded Envelope
+     * including the prepended OD4-header and setting cluon::time::now() as sampleTimeStamp.
+     *
+     * @param json representation according to the given message specification.
+     * @param messageIdentifier The given JSON representation shall be interpreted
+     *        as the specified message.
+     * @param senderStamp to be used in the Envelope.
+     * @return Proto-encoded Envelope including OD4-header or empty string.
+     */
+    std::string getProtoEncodedEnvelopeFromJSON(const std::string &json, int32_t messageIdentifier, uint32_t senderStamp) noexcept;
+
+   private:
+    std::string getProtoEncodedEnvelopeFromJSON(const std::string &json, int32_t messageIdentifier, uint32_t senderStamp, cluon::data::TimeStamp sampleTimeStamp) noexcept;
+
    private:
     std::vector<cluon::MetaMessage> m_listOfMetaMessages{};
     std::map<int32_t, cluon::MetaMessage> m_scopeOfMetaMessages{};
@@ -13288,6 +13303,7 @@ inline void ToODVDVisitor::visit(uint32_t id, std::string &&typeName, std::strin
 //#include "cluon/MessageParser.hpp"
 //#include "cluon/ToJSONVisitor.hpp"
 //#include "cluon/ToProtoVisitor.hpp"
+//#include "cluon/Time.hpp"
 //#include "cluon/any/any.hpp"
 
 #include <algorithm>
@@ -13392,6 +13408,18 @@ inline std::string EnvelopeConverter::getJSONFromEnvelope(cluon::data::Envelope 
 // clang-format off
 inline std::string EnvelopeConverter::getProtoEncodedEnvelopeFromJSONWithoutTimeStamps(const std::string &json, int32_t messageIdentifier, uint32_t senderStamp) noexcept {
     // clang-format on
+    return getProtoEncodedEnvelopeFromJSON(json, messageIdentifier, senderStamp, cluon::data::TimeStamp());
+}
+
+// clang-format off
+inline std::string EnvelopeConverter::getProtoEncodedEnvelopeFromJSON(const std::string &json, int32_t messageIdentifier, uint32_t senderStamp) noexcept {
+    // clang-format on
+    return getProtoEncodedEnvelopeFromJSON(json, messageIdentifier, senderStamp, cluon::time::now());
+}
+
+// clang-format off
+inline std::string EnvelopeConverter::getProtoEncodedEnvelopeFromJSON(const std::string &json, int32_t messageIdentifier, uint32_t senderStamp, cluon::data::TimeStamp sampleTimeStamp) noexcept {
+    // clang-format on
     std::string retVal;
     if (0 < m_scopeOfMetaMessages.count(messageIdentifier)) {
         // Get specification for message to be created.
@@ -13414,7 +13442,10 @@ inline std::string EnvelopeConverter::getProtoEncodedEnvelopeFromJSONWithoutTime
         gm.accept(protoEncoder);
 
         cluon::data::Envelope env;
-        env.dataType(messageIdentifier).serializedData(protoEncoder.encodedData()).senderStamp(senderStamp);
+        env.dataType(messageIdentifier)
+           .serializedData(protoEncoder.encodedData())
+           .senderStamp(senderStamp)
+           .sampleTimeStamp(sampleTimeStamp);
 
         retVal = cluon::serializeEnvelope(std::move(env));
     }
@@ -16672,6 +16703,10 @@ inline int32_t cluon_replay(int32_t argc, char **argv) {
                 // Stop execution in case of a running OD4Session.
                 if (od4 && !od4->isRunning()) {
                     break;
+                }
+                // If we are at the end of the playback file, simply wait a little to avoid excessive system load.
+                if (!player.hasMoreData() && keepRunning) {
+                    std::this_thread::sleep_for(std::chrono::duration<int32_t, std::milli>(200)); // LCOV_EXCL_LINE
                 }
                 // Check for broadcasting status updates.
                 if (playerStatusUpdate) {

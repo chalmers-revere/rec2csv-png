@@ -20,6 +20,8 @@
 
 #include "lodepng.h"
 
+#include <vpx/vpx_decoder.h>
+#include <vpx/vp8dx.h>
 #include <wels/codec_api.h>
 #include <libyuv.h>
 
@@ -60,7 +62,7 @@ int32_t main(int32_t argc, char **argv) {
                 std::clog << "Found " << messageParserResult.first.size() << " messages." << std::endl;
             }
             else {
-                std::cerr << argv[0] << ": Message specification '" << commandlineArguments["odvd"] << "' not found." << std::endl;
+                std::cerr << "[rec2csv-png]: Message specification '" << commandlineArguments["odvd"] << "' not found." << std::endl;
                 return retCode = 1;
             }
         }
@@ -70,24 +72,47 @@ int32_t main(int32_t argc, char **argv) {
             fin.close();
 
             ISVCDecoder *decoder{nullptr};
-            WelsCreateDecoder(&decoder);
-            if (0 != WelsCreateDecoder(&decoder) && (nullptr != decoder)) {
-                std::cerr << argv[0] << ": Failed to create openh264 decoder." << std::endl;
-                return retCode;
-            }
-
-            int logLevel{WELS_LOG_QUIET};
-            decoder->SetOption(DECODER_OPTION_TRACE_LEVEL, &logLevel);
-
-            SDecodingParam decodingParam;
             {
-                memset(&decodingParam, 0, sizeof(SDecodingParam));
-                decodingParam.eEcActiveIdc = ERROR_CON_DISABLE;
-                decodingParam.sVideoProperty.eVideoBsType = VIDEO_BITSTREAM_DEFAULT;
+                WelsCreateDecoder(&decoder);
+                if (0 != WelsCreateDecoder(&decoder) && (nullptr != decoder)) {
+                    std::cerr << "[rec2csv-png]: Failed to create openh264 decoder." << std::endl;
+                    return retCode;
+                }
+                int logLevel{WELS_LOG_QUIET};
+                decoder->SetOption(DECODER_OPTION_TRACE_LEVEL, &logLevel);
+
+                SDecodingParam decodingParam;
+                {
+                    memset(&decodingParam, 0, sizeof(SDecodingParam));
+                    decodingParam.eEcActiveIdc = ERROR_CON_DISABLE;
+                    decodingParam.sVideoProperty.eVideoBsType = VIDEO_BITSTREAM_DEFAULT;
+                }
+                if (cmResultSuccess != decoder->Initialize(&decodingParam)) {
+                    std::cerr << "[rec2csv-png]: Failed to initialize openh264 decoder." << std::endl;
+                    return retCode;
+                }
             }
-            if (cmResultSuccess != decoder->Initialize(&decodingParam)) {
-                std::cerr << argv[0] << ": Failed to initialize openh264 decoder." << std::endl;
-                return retCode;
+
+            vpx_codec_ctx_t codecVP8{};
+            {
+                memset(&codecVP8, 0, sizeof(codecVP8));
+                vpx_codec_err_t result = vpx_codec_dec_init(&codecVP8, &vpx_codec_vp8_dx_algo, nullptr, 0);
+                if (!result) {
+                    std::clog << "[rec2csv-png]: Using " << vpx_codec_iface_name(&vpx_codec_vp8_dx_algo) << std::endl;
+                }
+                else {
+                    std::cerr << "[rec2csv-png]: Failed to initialize decoder: " << vpx_codec_err_to_string(result) << std::endl;
+                }
+            }
+            vpx_codec_ctx_t codecVP9{};
+            {
+                vpx_codec_err_t result = vpx_codec_dec_init(&codecVP9, &vpx_codec_vp9_dx_algo, nullptr, 0);
+                if (!result) {
+                    std::clog << "[rec2csv-png]: Using " << vpx_codec_iface_name(&vpx_codec_vp9_dx_algo) << std::endl;
+                }
+                else {
+                    std::cerr << "[rec2csv-png]: Failed to initialize decoder: " << vpx_codec_err_to_string(result) << std::endl;
+                }
             }
 
             std::map<int32_t, cluon::MetaMessage> scope;
@@ -96,7 +121,6 @@ int32_t main(int32_t argc, char **argv) {
             constexpr bool AUTOREWIND{false};
             constexpr bool THREADING{false};
             cluon::Player player(commandlineArguments["rec"], AUTOREWIND, THREADING);
-
 
             uint32_t envelopeCounter{0};
             int32_t oldPercentage = -1;
@@ -107,7 +131,7 @@ int32_t main(int32_t argc, char **argv) {
                         envelopeCounter++;
                         const int32_t percentage = static_cast<int32_t>((static_cast<float>(envelopeCounter)*100.0f)/static_cast<float>(player.totalNumberOfEnvelopesInRecFile()));
                         if ( (percentage % 5 == 0) && (percentage != oldPercentage) ) {
-                            std::cerr << argv[0] << ": Processed " << percentage << "%." << std::endl;
+                            std::cerr << "[rec2csv-png]: Processed " << percentage << "%." << std::endl;
                             oldPercentage = percentage;
                         }
                     }
@@ -162,46 +186,78 @@ int32_t main(int32_t argc, char **argv) {
                             mapOfEntries[KEY] += timeStampsWithHeader.at(0) + valuesWithHeader.at(0) + '\n' + timeStampsWithHeader.at(1) + valuesWithHeader.at(1) + '\n';
                         }
 
-                        if (mkdir(__FILENAME.c_str(), 0755) != 0 && errno != EEXIST) {
-                            std::cerr << argv[0] << ": Failed to create directory '" << __FILENAME << "'" << std::endl;
-                        }
-                        else {
-                            cluon::data::TimeStamp sampleTimeStamp{env.sampleTimeStamp()};
-                            opendlv::proxy::ImageReading img = cluon::extractMessage<opendlv::proxy::ImageReading>(std::move(env));
-                            if ("h264" == img.format()) {
-                                uint8_t* yuvData[3];
-
-                                SBufferInfo bufferInfo;
-                                memset(&bufferInfo, 0, sizeof (SBufferInfo));
+                        if (opendlv::proxy::ImageReading::ID() == env.dataType()) {
+                            if (mkdir(__FILENAME.c_str(), 0755) != 0 && errno != EEXIST) {
+                                std::cerr << "[rec2csv-png]: Failed to create directory '" << __FILENAME << "'" << std::endl;
+                            }
+                            else {
+                                cluon::data::TimeStamp sampleTimeStamp{env.sampleTimeStamp()};
+                                opendlv::proxy::ImageReading img = cluon::extractMessage<opendlv::proxy::ImageReading>(std::move(env));
 
                                 std::string data{img.data()};
                                 const uint32_t LEN{static_cast<uint32_t>(data.size())};
 
-                                if (0 != decoder->DecodeFrame2(reinterpret_cast<const unsigned char*>(data.c_str()), LEN, yuvData, &bufferInfo)) {
-                                    std::cerr << argv[0] << ": H264 decoding for current frame failed." << std::endl;
-                                }
-                                else {
-                                    if (1 == bufferInfo.iBufferStatus) {
-                                        std::vector<unsigned char> image;
-                                        image.resize(img.width() * img.height() * 4);
+                                std::vector<unsigned char> image;
+                                image.resize(img.width() * img.height() * 4);
 
-                                        if (-1 != libyuv::I420ToABGR(yuvData[0], bufferInfo.UsrData.sSystemBuffer.iStride[0], yuvData[1], bufferInfo.UsrData.sSystemBuffer.iStride[1], yuvData[2], bufferInfo.UsrData.sSystemBuffer.iStride[1], image.data(), img.width() * 4, img.width(), img.height())) {
-                                            std::stringstream tmp;
-                                            tmp << __FILENAME << "/" << cluon::time::toMicroseconds(sampleTimeStamp) << ".png";
-                                            const std::string str = tmp.str();
-                                            auto r = lodepng::encode(str.c_str(), image, img.width(), img.height());
-                                            if (r) {
-                                                std::cerr << argv[0] << ": lodePNG error " << r << ": "<< lodepng_error_text(r) << std::endl;
+                                vpx_codec_iter_t it{nullptr};
+                                vpx_image_t *yuvFrame{nullptr};
+
+                                bool gotFrame{true};
+                                if ("h264" == img.fourcc()) {
+                                    uint8_t* yuvData[3];
+                                    SBufferInfo bufferInfo;
+                                    memset(&bufferInfo, 0, sizeof (SBufferInfo));
+                                    if (0 != decoder->DecodeFrame2(reinterpret_cast<const unsigned char*>(data.c_str()), LEN, yuvData, &bufferInfo)) {
+                                        std::cerr << "[rec2csv-png]: H264 decoding for current frame failed." << std::endl;
+                                    }
+                                    else {
+                                        if ( (gotFrame = (1 == bufferInfo.iBufferStatus)) ) {
+                                            if (-1 == libyuv::I420ToABGR(yuvData[0], bufferInfo.UsrData.sSystemBuffer.iStride[0], yuvData[1], bufferInfo.UsrData.sSystemBuffer.iStride[1], yuvData[2], bufferInfo.UsrData.sSystemBuffer.iStride[1], image.data(), img.width() * 4, img.width(), img.height())) {
+                                                std::cerr << "[rec2csv-png]: Error transforming color space." << std::endl;
+                                                gotFrame = false;
                                             }
                                         }
-                                        else {
-                                                std::cerr << argv[0] << ": Error transforming color space." << std::endl;
+                                    }
+                                }
+                                else if ("VP80" == img.fourcc()) {
+                                    if (vpx_codec_decode(&codecVP8, reinterpret_cast<const unsigned char*>(data.c_str()), LEN, nullptr, 0)) {
+                                        std::cerr << "[rec2csv-png]: Decoding for current frame failed." << std::endl;
+                                    }
+                                    else {
+                                        while (nullptr != (yuvFrame = vpx_codec_get_frame(&codecVP8, &it))) {
+                                            if (-1 == libyuv::I420ToABGR(yuvFrame->planes[VPX_PLANE_Y], yuvFrame->stride[VPX_PLANE_Y], yuvFrame->planes[VPX_PLANE_U], yuvFrame->stride[VPX_PLANE_U], yuvFrame->planes[VPX_PLANE_V], yuvFrame->stride[VPX_PLANE_V], image.data(), img.width() * 4, img.width(), img.height()) ) {
+                                                std::cerr << "[rec2csv-png]: Error transforming color space." << std::endl;
+                                                gotFrame = false;
+                                            }
                                         }
+                                    }
+                                }
+                                else if ("VP90" == img.fourcc()) {
+                                    if (vpx_codec_decode(&codecVP9, reinterpret_cast<const unsigned char*>(data.c_str()), LEN, nullptr, 0)) {
+                                        std::cerr << "[rec2csv-png]: Decoding for current frame failed." << std::endl;
+                                    }
+                                    else {
+                                        while (nullptr != (yuvFrame = vpx_codec_get_frame(&codecVP9, &it))) {
+                                            if (-1 == libyuv::I420ToABGR(yuvFrame->planes[VPX_PLANE_Y], yuvFrame->stride[VPX_PLANE_Y], yuvFrame->planes[VPX_PLANE_U], yuvFrame->stride[VPX_PLANE_U], yuvFrame->planes[VPX_PLANE_V], yuvFrame->stride[VPX_PLANE_V], image.data(), img.width() * 4, img.width(), img.height()) ) {
+                                                std::cerr << "[rec2csv-png]: Error transforming color space." << std::endl;
+                                                gotFrame = false;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (gotFrame) {
+                                    std::stringstream tmp;
+                                    tmp << __FILENAME << "/" << cluon::time::toMicroseconds(sampleTimeStamp) << ".png";
+                                    const std::string str = tmp.str();
+                                    auto r = lodepng::encode(str.c_str(), image, img.width(), img.height());
+                                    if (r) {
+                                        std::cerr << "[rec2csv-png]: lodePNG error " << r << ": "<< lodepng_error_text(r) << std::endl;
                                     }
                                 }
                             }
                         }
-
                     }
                 }
             }
@@ -220,9 +276,12 @@ int32_t main(int32_t argc, char **argv) {
                 decoder->Uninitialize();
                 WelsDestroyDecoder(decoder);
             }
+
+            vpx_codec_destroy(&codecVP8);
+            vpx_codec_destroy(&codecVP9);
         }
         else {
-            std::cerr << argv[0] << ": Recording '" << commandlineArguments["rec"] << "' not found." << std::endl;
+            std::cerr << "[rec2csv-png]: Recording '" << commandlineArguments["rec"] << "' not found." << std::endl;
             retCode = 1;
         }
     }
