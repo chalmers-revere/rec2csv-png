@@ -37,7 +37,7 @@ RUN cd tmp && \
     ../libvpx/configure --disable-docs --disable-tools --enable-vp8 --enable-vp9 --enable-libyuv --disable-unit-tests --disable-webm-io --disable-postproc && \
     make -j4 && make install
 RUN cd tmp && \
-    git clone --depth 1 https://github.com/cisco/openh264.git && \
+    git clone --depth 1 --branch v1.8.0 https://github.com/cisco/openh264.git && \
     cd openh264 && mkdir b && cd b \
     make -j2 -f ../Makefile libraries && make -f ../Makefile install
 ADD . /opt/sources
