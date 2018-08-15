@@ -210,6 +210,7 @@ int32_t main(int32_t argc, char **argv) {
                                     memset(&bufferInfo, 0, sizeof (SBufferInfo));
                                     if (0 != decoder->DecodeFrame2(reinterpret_cast<const unsigned char*>(data.c_str()), LEN, yuvData, &bufferInfo)) {
                                         std::cerr << "[rec2csv-png]: H264 decoding for current frame failed." << std::endl;
+                                        gotFrame = false;
                                     }
                                     else {
                                         if ( (gotFrame = (1 == bufferInfo.iBufferStatus)) ) {
