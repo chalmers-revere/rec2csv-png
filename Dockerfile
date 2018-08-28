@@ -56,12 +56,19 @@ MAINTAINER Christian Berger "christian.berger@gu.se"
 RUN apt-get update -y && \
     apt-get upgrade -y && \
     apt-get dist-upgrade -y && \
-    apt-get install -y --no-install-recommends libx11-6
+    apt-get install -y --no-install-recommends \
+        bc \
+        libx11-6 \
+        mjpegtools \
+        vpx-tools && \
+    apt-get clean
 
 WORKDIR /usr/lib/x86_64-linux-gnu
 COPY --from=builder /tmp/libopenh264-1.8.0-linux64.4.so.bz2 .
 RUN bunzip2 libopenh264-1.8.0-linux64.4.so.bz2 && \
     ln -sf libopenh264-1.8.0-linux64.4.so libopenh264.so.4
+
+ADD generate_webm.sh /usr/bin
 
 WORKDIR /usr/bin
 COPY --from=builder /tmp/bin/rec2csv+png .
