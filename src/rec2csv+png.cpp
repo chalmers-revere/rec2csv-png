@@ -50,6 +50,8 @@ int32_t main(int32_t argc, char **argv) {
         // Maps of container-ID & sender-stamp.
         std::map<std::string, std::string> mapOfFilenames;
         std::map<std::string, std::string> mapOfEntries;
+        std::map<std::string, size_t> mapOfEntriesSizes;
+        std::map<std::string, bool> mapOfFilenamesThatHaveBeenReset;
 
         cluon::MessageParser mp;
         std::pair<std::vector<cluon::MetaMessage>, cluon::MessageParser::MessageParserErrorCodes> messageParserResult;
@@ -70,6 +72,25 @@ int32_t main(int32_t argc, char **argv) {
         std::fstream fin(commandlineArguments["rec"], std::ios::in|std::ios::binary);
         if (fin.good()) {
             fin.close();
+
+            auto fileWriter = [argv, &mapOfFilenames, &mapOfEntries, &mapOfEntriesSizes, &mapOfFilenamesThatHaveBeenReset](){
+              for(auto entries : mapOfFilenames) {
+                  std::cerr << argv[0] << " writing '" << entries.second << ".csv'...";
+                  // Reset files on first access.
+                  std::ios_base::openmode openMode = std::ios::out|std::ios::binary|(mapOfFilenamesThatHaveBeenReset.count(entries.second) == 0 ? std::ios::trunc : std::ios::app);
+                  std::fstream fout(entries.second + ".csv", openMode);
+                  if (fout.good() && mapOfEntries.count(entries.first)) {
+                      const std::string tmp{mapOfEntries[entries.first]};
+                      fout.write(tmp.c_str(), static_cast<std::streamsize>(tmp.size()));
+                      // Reset memory.
+                      mapOfEntries[entries.first] = "";
+                      mapOfEntriesSizes[entries.first] = 0;
+                  }
+                  fout.close();
+                  mapOfFilenamesThatHaveBeenReset[entries.second] = true;
+                  std::cerr << " done." << std::endl;
+              }
+            };
 
             ISVCDecoder *decoder{nullptr};
             {
@@ -122,6 +143,7 @@ int32_t main(int32_t argc, char **argv) {
             constexpr bool THREADING{false};
             cluon::Player player(commandlineArguments["rec"], AUTOREWIND, THREADING);
 
+            constexpr const size_t TEN_MB{10*1024*1024};
             uint32_t envelopeCounter{0};
             int32_t oldPercentage = -1;
             while (player.hasMoreData()) {
@@ -166,7 +188,10 @@ int32_t main(int32_t argc, char **argv) {
 
                             cluon::ToCSVVisitor csv(';', false);
                             gm.accept(csv);
-                            mapOfEntries[KEY] += stringtoolbox::split(timeStamps, '\n')[0] + csv.csv();
+
+                            std::string entry{stringtoolbox::split(timeStamps, '\n')[0] + csv.csv()};
+                            mapOfEntries[KEY] += entry;
+                            mapOfEntriesSizes[KEY] += entry.size();
                         }
                         else {
                             // Extract timestamps.
@@ -182,8 +207,15 @@ int32_t main(int32_t argc, char **argv) {
                             gm.accept(csv);
 
                             std::vector<std::string> valuesWithHeader = stringtoolbox::split(csv.csv(), '\n');
+                            std::string entry{timeStampsWithHeader.at(0) + valuesWithHeader.at(0) + '\n' + timeStampsWithHeader.at(1) + valuesWithHeader.at(1) + '\n'};
+                            mapOfEntries[KEY] += entry;
+                            mapOfEntriesSizes[KEY] += entry.size();
+                        }
 
-                            mapOfEntries[KEY] += timeStampsWithHeader.at(0) + valuesWithHeader.at(0) + '\n' + timeStampsWithHeader.at(1) + valuesWithHeader.at(1) + '\n';
+                        // Keep track of buffer sizes.
+                        if (mapOfEntriesSizes[KEY] > TEN_MB) {
+                            std::cerr << argv[0] << ": Buffer for '" << KEY << "' has consumed " << mapOfEntriesSizes[KEY] << "/" << TEN_MB << " bytes; dumping data to disk."<< std::endl;
+                            fileWriter();
                         }
 
                         if (opendlv::proxy::ImageReading::ID() == env.dataType()) {
@@ -262,16 +294,8 @@ int32_t main(int32_t argc, char **argv) {
                     }
                 }
             }
-            for(auto entries : mapOfFilenames) {
-                std::cerr << argv[0] << " writing '" << entries.second << ".csv'...";
-                std::fstream fout(entries.second + ".csv", std::ios::out|std::ios::binary|std::ios::trunc);
-                if (fout.good() && mapOfEntries.count(entries.first)) {
-                    const std::string tmp{mapOfEntries[entries.first]};
-                    fout.write(tmp.c_str(), static_cast<std::streamsize>(tmp.size()));
-                }
-                fout.close();
-                std::cerr << " done." << std::endl;
-            }
+            // Clear buffer at the end.
+            fileWriter();
 
             if (decoder) {
                 decoder->Uninitialize();
