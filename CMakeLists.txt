@@ -95,6 +95,10 @@ find_package(Libvpx REQUIRED)
 include_directories(SYSTEM ${VPX_INCLUDE_DIRS})
 set(LIBRARIES ${LIBRARIES} ${VPX_LIBRARIES})
 
+find_package(Libjpeg-turbo REQUIRED)
+include_directories(SYSTEM ${JPEG_TURBO_INCLUDE_DIRS})
+set(LIBRARIES ${LIBRARIES} ${JPEG_TURBO_LIBRARIES})
+
 ################################################################################
 # Create executable.
 add_executable(${PROJECT_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROJECT_NAME}.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/lodepng.cpp)

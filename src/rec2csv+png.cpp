@@ -20,6 +20,7 @@
 
 #include "lodepng.h"
 
+#include <turbojpeg.h>
 #include <vpx/vpx_decoder.h>
 #include <vpx/vp8dx.h>
 #include <wels/codec_api.h>
@@ -135,6 +136,10 @@ int32_t main(int32_t argc, char **argv) {
                     std::cerr << "[rec2csv-png]: Failed to initialize decoder: " << vpx_codec_err_to_string(result) << std::endl;
                 }
             }
+
+            unsigned char *rawImageBGR24FromJPEG{nullptr};
+            std::vector<uint8_t> i420ForImageBGR24FromJPEG;
+            tjhandle jpegDecompressor = tjInitDecompress();
 
             std::map<int32_t, cluon::MetaMessage> scope;
             for (const auto &e : messageParserResult.first) { scope[e.messageIdentifier()] = e; }
@@ -279,6 +284,35 @@ int32_t main(int32_t argc, char **argv) {
                                         }
                                     }
                                 }
+                                else if ("jfif" == img.fourcc()) {
+                                    unsigned char *ptr{reinterpret_cast<unsigned char*>(const_cast<char*>(data.data()))};
+                                    int width{0};
+                                    int height{0};
+                                    int subsampling{0};
+                                    int len{static_cast<int>(LEN)};
+                                    tjDecompressHeader2(jpegDecompressor, ptr, len, &width, &height, &subsampling);
+                                    if ( ((0 < width) && (static_cast<uint32_t>(width) == img.width())) && 
+                                         ((0 < height) && (static_cast<uint32_t>(height) == img.height())) ) {
+                                        if (nullptr == rawImageBGR24FromJPEG) {
+                                            rawImageBGR24FromJPEG = new unsigned char[img.width() * img.height() * 3];
+                                            i420ForImageBGR24FromJPEG.reserve(img.width() * img.height() * 3/2);
+                                        }
+                                        tjDecompress2(jpegDecompressor, ptr, len, rawImageBGR24FromJPEG, width, 0 /*pitch*/, height, TJPF_RGB, TJFLAG_FASTDCT);
+                                        libyuv::RAWToI420(reinterpret_cast<uint8_t*>(rawImageBGR24FromJPEG), width * 3 /* 3*width for RGB24*/,
+                                                            i420ForImageBGR24FromJPEG.data(), width,
+                                                            i420ForImageBGR24FromJPEG.data()+(width * height), width/2,
+                                                            i420ForImageBGR24FromJPEG.data()+(width * height + ((width * height) >> 2)), width/2,
+                                                            width, height);
+                                        if (-1 == libyuv::I420ToABGR(i420ForImageBGR24FromJPEG.data(), width,
+                                                                     i420ForImageBGR24FromJPEG.data()+(width * height), width/2,
+                                                                     i420ForImageBGR24FromJPEG.data()+(width * height + ((width * height) >> 2)), width/2,
+                                                                     image.data(), img.width() * 4,
+                                                                     img.width(), img.height()) ) {
+                                            std::cerr << "[rec2csv-png]: Error transforming color space." << std::endl;
+                                            gotFrame = false;
+                                        }
+                                    }
+                                }
 
                                 if (gotFrame) {
                                     std::stringstream tmp;
@@ -304,6 +338,11 @@ int32_t main(int32_t argc, char **argv) {
 
             vpx_codec_destroy(&codecVP8);
             vpx_codec_destroy(&codecVP9);
+
+            if (nullptr != rawImageBGR24FromJPEG) {
+                delete [] rawImageBGR24FromJPEG;
+            }
+            tjDestroy(jpegDecompressor);
         }
         else {
             std::cerr << "[rec2csv-png]: Recording '" << commandlineArguments["rec"] << "' not found." << std::endl;
