@@ -1,6 +1,6 @@
 // This is an auto-generated header-only single-file distribution of libcluon.
-// Date: Sun, 29 Jul 2018 21:28:50 +0200
-// Version: 0.0.107
+// Date: Tue, 28 Feb 2023 23:59:56 +0100
+// Version: 0.0.145
 //
 //
 // Implementation of N4562 std::experimental::any (merged into C++17) for C++11 compilers.
@@ -20,9 +20,30 @@
 #ifndef LINB_ANY_HPP
 #define LINB_ANY_HPP
 //#pragma once
+#include <utility>
 #include <typeinfo>
 #include <type_traits>
 #include <stdexcept>
+
+
+#if defined(PARTICLE)
+#if !defined(__cpp_exceptions) && !defined(ANY_IMPL_NO_EXCEPTIONS) && !defined(ANY_IMPL_EXCEPTIONS)
+#   define ANY_IMPL_NO_EXCEPTIONS
+# endif
+#else
+// you can opt-out of exceptions by definining ANY_IMPL_NO_EXCEPTIONS,
+// but you must ensure not to cast badly when passing an `any' object to any_cast<T>(any)
+#endif
+
+#if defined(PARTICLE)
+#if !defined(__cpp_rtti) && !defined(ANY_IMPL_NO_RTTI) && !defined(ANY_IMPL_RTTI)
+#   define ANY_IMPL_NO_RTTI
+# endif
+#else
+// you can opt-out of RTTI by defining ANY_IMPL_NO_RTTI,
+// in order to disable functions working with the typeid of a type
+#endif
+
 
 namespace linb
 {
@@ -131,11 +152,13 @@ public:
         return this->vtable == nullptr;
     }
 
+#ifndef ANY_IMPL_NO_RTTI
     /// If *this has a contained object of type T, typeid(T); otherwise typeid(void).
     const std::type_info& type() const noexcept
     {
         return empty()? typeid(void) : this->vtable->type();
     }
+#endif
 
     /// Exchange the states of *this and rhs.
     void swap(any& rhs) noexcept
@@ -149,7 +172,7 @@ public:
             if(this->vtable != nullptr)
             {
                 this->vtable->move(this->storage, rhs.storage);
-                //this->vtable = nullptr; -- uneeded, see below
+                //this->vtable = nullptr; -- unneeded, see below
             }
 
             // move from tmp (previously rhs) to *this.
@@ -183,8 +206,10 @@ private: // Storage and Virtual Method Table
         // Note: The caller is responssible for doing .vtable = nullptr after destructful operations
         // such as destroy() and/or move().
 
+#ifndef ANY_IMPL_NO_RTTI
         /// The type of the object this vtable is for.
         const std::type_info& (*type)() noexcept;
+#endif
 
         /// Destroys the object in the union.
         /// The state of the union after this call is unspecified, caller must ensure not to use src anymore.
@@ -206,10 +231,12 @@ private: // Storage and Virtual Method Table
     template<typename T>
     struct vtable_dynamic
     {
+#ifndef ANY_IMPL_NO_RTTI
         static const std::type_info& type() noexcept
         {
             return typeid(T);
         }
+#endif
 
         static void destroy(storage_union& storage) noexcept
         {
@@ -239,10 +266,12 @@ private: // Storage and Virtual Method Table
     template<typename T>
     struct vtable_stack
     {
+#ifndef ANY_IMPL_NO_RTTI
         static const std::type_info& type() noexcept
         {
             return typeid(T);
         }
+#endif
 
         static void destroy(storage_union& storage) noexcept
         {
@@ -275,7 +304,7 @@ private: // Storage and Virtual Method Table
     template<typename T>
     struct requires_allocation :
         std::integral_constant<bool,
-                !(std::is_nothrow_move_constructible<T>::value      // N4562 �6.3/3 [any.class]
+                !(std::is_nothrow_move_constructible<T>::value      // N4562 §6.3/3 [any.class]
                   && sizeof(T) <= sizeof(storage_union::stack)
                   && std::alignment_of<T>::value <= std::alignment_of<storage_union::stack_storage_t>::value)>
     {};
@@ -286,7 +315,10 @@ private: // Storage and Virtual Method Table
     {
         using VTableType = typename std::conditional<requires_allocation<T>::value, vtable_dynamic<T>, vtable_stack<T>>::type;
         static vtable_type table = {
-            VTableType::type, VTableType::destroy,
+#ifndef ANY_IMPL_NO_RTTI
+            VTableType::type,
+#endif
+            VTableType::destroy,
             VTableType::copy, VTableType::move,
             VTableType::swap,
         };
@@ -298,27 +330,6 @@ protected:
     friend const T* any_cast(const any* operand) noexcept;
     template<typename T>
     friend T* any_cast(any* operand) noexcept;
-
-    /// Same effect as is_same(this->type(), t);
-    bool is_typed(const std::type_info& t) const
-    {
-        return is_same(this->type(), t);
-    }
-
-    /// Checks if two type infos are the same.
-    ///
-    /// If ANY_IMPL_FAST_TYPE_INFO_COMPARE is defined, checks only the address of the
-    /// type infos, otherwise does an actual comparision. Checking addresses is
-    /// only a valid approach when there's no interaction with outside sources
-    /// (other shared libraries and such).
-    static bool is_same(const std::type_info& a, const std::type_info& b)
-    {
-#ifdef ANY_IMPL_FAST_TYPE_INFO_COMPARE
-        return &a == &b;
-#else
-        return a == b;
-#endif
-    }
 
     /// Casts (with no type_info checks) the storage pointer as const T*.
     template<typename T>
@@ -391,7 +402,9 @@ template<typename ValueType>
 inline ValueType any_cast(const any& operand)
 {
     auto p = any_cast<typename std::add_const<typename std::remove_reference<ValueType>::type>::type>(&operand);
+#ifndef ANY_IMPL_NO_EXCEPTIONS
     if(p == nullptr) throw bad_any_cast();
+#endif
     return *p;
 }
 
@@ -400,56 +413,55 @@ template<typename ValueType>
 inline ValueType any_cast(any& operand)
 {
     auto p = any_cast<typename std::remove_reference<ValueType>::type>(&operand);
+#ifndef ANY_IMPL_NO_EXCEPTIONS
     if(p == nullptr) throw bad_any_cast();
+#endif
     return *p;
 }
 
 ///
-/// If ANY_IMPL_ANYCAST_MOVEABLE is not defined, does as N4562 specifies:
-///     Performs *any_cast<remove_reference_t<ValueType>>(&operand), or throws bad_any_cast on failure.
-///
-/// If ANY_IMPL_ANYCAST_MOVEABLE is defined, does as LWG Defect 2509 specifies:
-///     If ValueType is MoveConstructible and isn't a lvalue reference, performs
-///     std::move(*any_cast<remove_reference_t<ValueType>>(&operand)), otherwise
-///     *any_cast<remove_reference_t<ValueType>>(&operand). Throws bad_any_cast on failure.
+/// If ValueType is MoveConstructible and isn't a lvalue reference, performs
+/// std::move(*any_cast<remove_reference_t<ValueType>>(&operand)), otherwise
+/// *any_cast<remove_reference_t<ValueType>>(&operand). Throws bad_any_cast on failure.
 ///
 template<typename ValueType>
 inline ValueType any_cast(any&& operand)
 {
-#ifdef ANY_IMPL_ANY_CAST_MOVEABLE
-    // https://cplusplus.github.io/LWG/lwg-active.html#2509
     using can_move = std::integral_constant<bool,
         std::is_move_constructible<ValueType>::value
         && !std::is_lvalue_reference<ValueType>::value>;
-#else
-    using can_move = std::false_type;
-#endif
 
     auto p = any_cast<typename std::remove_reference<ValueType>::type>(&operand);
+#ifndef ANY_IMPL_NO_EXCEPTIONS
     if(p == nullptr) throw bad_any_cast();
+#endif
     return detail::any_cast_move_if_true<ValueType>(p, can_move());
 }
 
 /// If operand != nullptr && operand->type() == typeid(ValueType), a pointer to the object
 /// contained by operand, otherwise nullptr.
-template<typename T>
-inline const T* any_cast(const any* operand) noexcept
+template<typename ValueType>
+inline const ValueType* any_cast(const any* operand) noexcept
 {
-    if(operand == nullptr || !operand->is_typed(typeid(T)))
-        return nullptr;
+    using T = typename std::decay<ValueType>::type;
+
+    if (operand && operand->vtable == any::vtable_for_type<T>())
+        return operand->cast<ValueType>();
     else
-        return operand->cast<T>();
+        return nullptr;
 }
 
 /// If operand != nullptr && operand->type() == typeid(ValueType), a pointer to the object
 /// contained by operand, otherwise nullptr.
-template<typename T>
-inline T* any_cast(any* operand) noexcept
+template<typename ValueType>
+inline ValueType* any_cast(any* operand) noexcept
 {
-    if(operand == nullptr || !operand->is_typed(typeid(T)))
-        return nullptr;
+    using T = typename std::decay<ValueType>::type;
+
+    if (operand && operand->vtable == any::vtable_for_type<T>())
+        return operand->cast<ValueType>();
     else
-        return operand->cast<T>();
+        return nullptr;
 }
 
 }
@@ -466,479 +478,814 @@ namespace std
 //
 //  peglib.h
 //
-//  Copyright (c) 2015-18 Yuji Hirose. All rights reserved.
+//  Copyright (c) 2020 Yuji Hirose. All rights reserved.
 //  MIT License
 //
 
 #ifndef CPPPEGLIB_PEGLIB_H
 #define CPPPEGLIB_PEGLIB_H
 
+#ifndef PEGLIB_USE_STD_ANY
+#ifdef _MSVC_LANG
+#define PEGLIB_USE_STD_ANY _MSVC_LANG >= 201703L
+#elif defined(__cplusplus)
+#define PEGLIB_USE_STD_ANY __cplusplus >= 201703L
+#endif
+#endif // PEGLIB_USE_STD_ANY
+
 #include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <cstring>
 #include <functional>
 #include <initializer_list>
 #include <iostream>
 #include <limits>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
+#if PEGLIB_USE_STD_ANY
+#include <any>
+#endif
 
 // guard for older versions of VC++
 #ifdef _MSC_VER
-// VS2013 has no constexpr
-#if (_MSC_VER == 1800)
-#define PEGLIB_NO_CONSTEXPR_SUPPORT
-#elif (_MSC_VER >= 1800)
-// good to go
-#else (_MSC_VER < 1800)
-#error "Requires C+11 support"
+#if defined(_MSC_VER) && _MSC_VER < 1900 // Less than Visual Studio 2015
+#error "Requires complete C+11 support"
 #endif
 #endif
-
-// define if the compiler doesn't support unicode characters reliably in the
-// source code
-//#define PEGLIB_NO_UNICODE_CHARS
 
 namespace peg {
-
-#if __clang__ == 1 && __clang_major__ == 5 && __clang_minor__ == 0 && __clang_patchlevel__ == 0
-static void* enabler = nullptr; // workaround for Clang 5.0.0
-#else
-extern void* enabler;
-#endif
 
 /*-----------------------------------------------------------------------------
  *  any
  *---------------------------------------------------------------------------*/
 
-class any
-{
+#if PEGLIB_USE_STD_ANY
+using any = std::any;
+
+// Define a function alias to std::any_cast using perfect forwarding
+template <typename T, typename... Args>
+auto any_cast(Args &&... args)
+    -> decltype(std::any_cast<T>(std::forward<Args>(args)...)) {
+  return std::any_cast<T>(std::forward<Args>(args)...);
+}
+#else
+class any {
 public:
-    any() : content_(nullptr) {}
+  any() = default;
 
-    any(const any& rhs) : content_(rhs.clone()) {}
+  any(const any &rhs) : content_(rhs.clone()) {}
 
-    any(any&& rhs) : content_(rhs.content_) {
-        rhs.content_ = nullptr;
+  any(any &&rhs) : content_(rhs.content_) { rhs.content_ = nullptr; }
+
+  template <typename T> any(const T &value) : content_(new holder<T>(value)) {}
+
+  any &operator=(const any &rhs) {
+    if (this != &rhs) {
+      if (content_) { delete content_; }
+      content_ = rhs.clone();
     }
+    return *this;
+  }
 
-    template <typename T>
-    any(const T& value) : content_(new holder<T>(value)) {}
-
-    any& operator=(const any& rhs) {
-        if (this != &rhs) {
-            if (content_) {
-                delete content_;
-            }
-            content_ = rhs.clone();
-        }
-        return *this;
+  any &operator=(any &&rhs) {
+    if (this != &rhs) {
+      if (content_) { delete content_; }
+      content_ = rhs.content_;
+      rhs.content_ = nullptr;
     }
+    return *this;
+  }
 
-    any& operator=(any&& rhs) {
-        if (this != &rhs) {
-            if (content_) {
-                delete content_;
-            }
-            content_ = rhs.content_;
-            rhs.content_ = nullptr;
-        }
-        return *this;
-    }
+  ~any() { delete content_; }
 
-    ~any() {
-        delete content_;
-    }
+  bool has_value() const { return content_ != nullptr; }
 
-    bool is_undefined() const {
-        return content_ == nullptr;
-    }
+  template <typename T> friend T &any_cast(any &val);
 
-    template <
-        typename T,
-        typename std::enable_if<!std::is_same<T, any>::value>::type*& = enabler
-    >
-    T& get() {
-        if (!content_) {
-            throw std::bad_cast();
-        }
-        auto p = dynamic_cast<holder<T>*>(content_);
-        assert(p);
-        if (!p) {
-            throw std::bad_cast();
-        }
-        return p->value_;
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<std::is_same<T, any>::value>::type*& = enabler
-    >
-    T& get() {
-        return *this;
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<!std::is_same<T, any>::value>::type*& = enabler
-    >
-    const T& get() const {
-        assert(content_);
-        auto p = dynamic_cast<holder<T>*>(content_);
-        assert(p);
-        if (!p) {
-            throw std::bad_cast();
-        }
-        return p->value_;
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<std::is_same<T, any>::value>::type*& = enabler
-    >
-    const any& get() const {
-        return *this;
-    }
+  template <typename T> friend const T &any_cast(const any &val);
 
 private:
-    struct placeholder {
-        virtual ~placeholder() {}
-        virtual placeholder* clone() const = 0;
-    };
+  struct placeholder {
+    virtual ~placeholder() {}
+    virtual placeholder *clone() const = 0;
+  };
 
-    template <typename T>
-    struct holder : placeholder {
-        holder(const T& value) : value_(value) {}
-        placeholder* clone() const override {
-            return new holder(value_);
-        }
-        T value_;
-    };
+  template <typename T> struct holder : placeholder {
+    holder(const T &value) : value_(value) {}
+    placeholder *clone() const override { return new holder(value_); }
+    T value_;
+  };
 
-    placeholder* clone() const {
-        return content_ ? content_->clone() : nullptr;
-    }
+  placeholder *clone() const { return content_ ? content_->clone() : nullptr; }
 
-    placeholder* content_;
+  placeholder *content_ = nullptr;
 };
+
+template <typename T> T &any_cast(any &val) {
+  if (!val.content_) { throw std::bad_cast(); }
+  auto p = dynamic_cast<any::holder<T> *>(val.content_);
+  assert(p);
+  if (!p) { throw std::bad_cast(); }
+  return p->value_;
+}
+
+template <> inline any &any_cast<any>(any &val) { return val; }
+
+template <typename T> const T &any_cast(const any &val) {
+  assert(val.content_);
+  auto p = dynamic_cast<any::holder<T> *>(val.content_);
+  assert(p);
+  if (!p) { throw std::bad_cast(); }
+  return p->value_;
+}
+
+template <> inline const any &any_cast<any>(const any &val) { return val; }
+#endif
 
 /*-----------------------------------------------------------------------------
  *  scope_exit
  *---------------------------------------------------------------------------*/
 
-// This is based on "http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2014/n4189".
+// This is based on
+// "http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2014/n4189".
 
-template <typename EF>
-struct scope_exit
-{
-    explicit scope_exit(EF&& f)
-        : exit_function(std::move(f))
-        , execute_on_destruction{true} {}
+template <typename EF> struct scope_exit {
+  explicit scope_exit(EF &&f)
+      : exit_function(std::move(f)), execute_on_destruction{true} {}
 
-    scope_exit(scope_exit&& rhs)
-        : exit_function(std::move(rhs.exit_function))
-        , execute_on_destruction{rhs.execute_on_destruction} {
-            rhs.release();
-    }
+  scope_exit(scope_exit &&rhs)
+      : exit_function(std::move(rhs.exit_function)),
+        execute_on_destruction{rhs.execute_on_destruction} {
+    rhs.release();
+  }
 
-    ~scope_exit() {
-        if (execute_on_destruction) {
-            this->exit_function();
-        }
-    }
+  ~scope_exit() {
+    if (execute_on_destruction) { this->exit_function(); }
+  }
 
-    void release() {
-        this->execute_on_destruction = false;
-    }
+  void release() { this->execute_on_destruction = false; }
 
 private:
-    scope_exit(const scope_exit&) = delete;
-    void operator=(const scope_exit&) = delete;
-    scope_exit& operator=(scope_exit&&) = delete;
+  scope_exit(const scope_exit &) = delete;
+  void operator=(const scope_exit &) = delete;
+  scope_exit &operator=(scope_exit &&) = delete;
 
-    EF   exit_function;
-    bool execute_on_destruction;
+  EF exit_function;
+  bool execute_on_destruction;
 };
 
 template <typename EF>
-auto make_scope_exit(EF&& exit_function) -> scope_exit<EF> {
-    return scope_exit<typename std::remove_reference<EF>::type>(std::forward<EF>(exit_function));
+auto make_scope_exit(EF &&exit_function) -> scope_exit<EF> {
+  return scope_exit<typename std::remove_reference<EF>::type>(
+      std::forward<EF>(exit_function));
 }
+
+/*-----------------------------------------------------------------------------
+ *  UTF8 functions
+ *---------------------------------------------------------------------------*/
+
+inline size_t codepoint_length(const char *s8, size_t l) {
+  if (l) {
+    auto b = static_cast<uint8_t>(s8[0]);
+    if ((b & 0x80) == 0) {
+      return 1;
+    } else if ((b & 0xE0) == 0xC0) {
+      return 2;
+    } else if ((b & 0xF0) == 0xE0) {
+      return 3;
+    } else if ((b & 0xF8) == 0xF0) {
+      return 4;
+    }
+  }
+  return 0;
+}
+
+inline size_t encode_codepoint(char32_t cp, char *buff) {
+  if (cp < 0x0080) {
+    buff[0] = static_cast<char>(cp & 0x7F);
+    return 1;
+  } else if (cp < 0x0800) {
+    buff[0] = static_cast<char>(0xC0 | ((cp >> 6) & 0x1F));
+    buff[1] = static_cast<char>(0x80 | (cp & 0x3F));
+    return 2;
+  } else if (cp < 0xD800) {
+    buff[0] = static_cast<char>(0xE0 | ((cp >> 12) & 0xF));
+    buff[1] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    buff[2] = static_cast<char>(0x80 | (cp & 0x3F));
+    return 3;
+  } else if (cp < 0xE000) {
+    // D800 - DFFF is invalid...
+    return 0;
+  } else if (cp < 0x10000) {
+    buff[0] = static_cast<char>(0xE0 | ((cp >> 12) & 0xF));
+    buff[1] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    buff[2] = static_cast<char>(0x80 | (cp & 0x3F));
+    return 3;
+  } else if (cp < 0x110000) {
+    buff[0] = static_cast<char>(0xF0 | ((cp >> 18) & 0x7));
+    buff[1] = static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+    buff[2] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    buff[3] = static_cast<char>(0x80 | (cp & 0x3F));
+    return 4;
+  }
+  return 0;
+}
+
+inline std::string encode_codepoint(char32_t cp) {
+  char buff[4];
+  auto l = encode_codepoint(cp, buff);
+  return std::string(buff, l);
+}
+
+inline bool decode_codepoint(const char *s8, size_t l, size_t &bytes,
+                             char32_t &cp) {
+  if (l) {
+    auto b = static_cast<uint8_t>(s8[0]);
+    if ((b & 0x80) == 0) {
+      bytes = 1;
+      cp = b;
+      return true;
+    } else if ((b & 0xE0) == 0xC0) {
+      if (l >= 2) {
+        bytes = 2;
+        cp = ((static_cast<char32_t>(s8[0] & 0x1F)) << 6) |
+             (static_cast<char32_t>(s8[1] & 0x3F));
+        return true;
+      }
+    } else if ((b & 0xF0) == 0xE0) {
+      if (l >= 3) {
+        bytes = 3;
+        cp = ((static_cast<char32_t>(s8[0] & 0x0F)) << 12) |
+             ((static_cast<char32_t>(s8[1] & 0x3F)) << 6) |
+             (static_cast<char32_t>(s8[2] & 0x3F));
+        return true;
+      }
+    } else if ((b & 0xF8) == 0xF0) {
+      if (l >= 4) {
+        bytes = 4;
+        cp = ((static_cast<char32_t>(s8[0] & 0x07)) << 18) |
+             ((static_cast<char32_t>(s8[1] & 0x3F)) << 12) |
+             ((static_cast<char32_t>(s8[2] & 0x3F)) << 6) |
+             (static_cast<char32_t>(s8[3] & 0x3F));
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+inline size_t decode_codepoint(const char *s8, size_t l, char32_t &out) {
+  size_t bytes;
+  if (decode_codepoint(s8, l, bytes, out)) { return bytes; }
+  return 0;
+}
+
+inline char32_t decode_codepoint(const char *s8, size_t l) {
+  char32_t out = 0;
+  decode_codepoint(s8, l, out);
+  return out;
+}
+
+inline std::u32string decode(const char *s8, size_t l) {
+  std::u32string out;
+  size_t i = 0;
+  while (i < l) {
+    auto beg = i++;
+    while (i < l && (s8[i] & 0xc0) == 0x80) {
+      i++;
+    }
+    out += decode_codepoint(&s8[beg], (i - beg));
+  }
+  return out;
+}
+
+/*-----------------------------------------------------------------------------
+ *  resolve_escape_sequence
+ *---------------------------------------------------------------------------*/
+
+inline bool is_hex(char c, int &v) {
+  if ('0' <= c && c <= '9') {
+    v = c - '0';
+    return true;
+  } else if ('a' <= c && c <= 'f') {
+    v = c - 'a' + 10;
+    return true;
+  } else if ('A' <= c && c <= 'F') {
+    v = c - 'A' + 10;
+    return true;
+  }
+  return false;
+}
+
+inline bool is_digit(char c, int &v) {
+  if ('0' <= c && c <= '9') {
+    v = c - '0';
+    return true;
+  }
+  return false;
+}
+
+inline std::pair<int, size_t> parse_hex_number(const char *s, size_t n,
+                                               size_t i) {
+  int ret = 0;
+  int val;
+  while (i < n && is_hex(s[i], val)) {
+    ret = static_cast<int>(ret * 16 + val);
+    i++;
+  }
+  return std::make_pair(ret, i);
+}
+
+inline std::pair<int, size_t> parse_octal_number(const char *s, size_t n,
+                                                 size_t i) {
+  int ret = 0;
+  int val;
+  while (i < n && is_digit(s[i], val)) {
+    ret = static_cast<int>(ret * 8 + val);
+    i++;
+  }
+  return std::make_pair(ret, i);
+}
+
+inline std::string resolve_escape_sequence(const char *s, size_t n) {
+  std::string r;
+  r.reserve(n);
+
+  size_t i = 0;
+  while (i < n) {
+    auto ch = s[i];
+    if (ch == '\\') {
+      i++;
+      if (i == n) { throw std::runtime_error("Invalid escape sequence..."); }
+      switch (s[i]) {
+      case 'n':
+        r += '\n';
+        i++;
+        break;
+      case 'r':
+        r += '\r';
+        i++;
+        break;
+      case 't':
+        r += '\t';
+        i++;
+        break;
+      case '\'':
+        r += '\'';
+        i++;
+        break;
+      case '"':
+        r += '"';
+        i++;
+        break;
+      case '[':
+        r += '[';
+        i++;
+        break;
+      case ']':
+        r += ']';
+        i++;
+        break;
+      case '\\':
+        r += '\\';
+        i++;
+        break;
+      case 'x':
+      case 'u': {
+        char32_t cp;
+        std::tie(cp, i) = parse_hex_number(s, n, i + 1);
+        r += encode_codepoint(cp);
+        break;
+      }
+      default: {
+        char32_t cp;
+        std::tie(cp, i) = parse_octal_number(s, n, i);
+        r += encode_codepoint(cp);
+        break;
+      }
+      }
+    } else {
+      r += ch;
+      i++;
+    }
+  }
+  return r;
+}
+
+/*-----------------------------------------------------------------------------
+ *  Trie
+ *---------------------------------------------------------------------------*/
+
+class Trie {
+public:
+  Trie() = default;
+  Trie(const Trie &) = default;
+
+  Trie(const std::vector<std::string> &items) {
+    for (const auto &item : items) {
+      for (size_t len = 1; len <= item.size(); len++) {
+        auto last = len == item.size();
+        std::string s(item.c_str(), len);
+        auto it = dic_.find(s);
+        if (it == dic_.end()) {
+          dic_.emplace(s, Info{last, last});
+        } else if (last) {
+          it->second.match = true;
+        } else {
+          it->second.done = false;
+        }
+      }
+    }
+  }
+
+  size_t match(const char *text, size_t text_len) const {
+    size_t match_len = 0;
+    {
+      auto done = false;
+      size_t len = 1;
+      while (!done && len <= text_len) {
+        std::string s(text, len);
+        auto it = dic_.find(s);
+        if (it == dic_.end()) {
+          done = true;
+        } else {
+          if (it->second.match) { match_len = len; }
+          if (it->second.done) { done = true; }
+        }
+        len += 1;
+      }
+    }
+    return match_len;
+  }
+
+private:
+  struct Info {
+    bool done;
+    bool match;
+  };
+  std::unordered_map<std::string, Info> dic_;
+};
 
 /*-----------------------------------------------------------------------------
  *  PEG
  *---------------------------------------------------------------------------*/
 
 /*
-* Line information utility function
-*/
-inline std::pair<size_t, size_t> line_info(const char* start, const char* cur) {
-    auto p = start;
-    auto col_ptr = p;
-    auto no = 1;
+ * Line information utility function
+ */
+inline std::pair<size_t, size_t> line_info(const char *start, const char *cur) {
+  auto p = start;
+  auto col_ptr = p;
+  auto no = 1;
 
-    while (p < cur) {
-        if (*p == '\n') {
-            no++;
-            col_ptr = p + 1;
-        }
-        p++;
+  while (p < cur) {
+    if (*p == '\n') {
+      no++;
+      col_ptr = p + 1;
     }
+    p++;
+  }
 
-    auto col = p - col_ptr + 1;
+  auto col = p - col_ptr + 1;
 
-    return std::make_pair(no, col);
+  return std::make_pair(no, col);
 }
 
 /*
-* Semantic values
-*/
-struct SemanticValues : protected std::vector<any>
-{
-    // Input text
-    const char* path;
-    const char* ss;
+ * String tag
+ */
+inline constexpr unsigned int str2tag(const char *str, unsigned int h = 0) {
+  return (*str == '\0')
+             ? h
+             : str2tag(str + 1, (h * 33) ^ static_cast<unsigned char>(*str));
+}
 
-    // Matched string
-    const char* c_str() const { return s_; }
-    size_t      length() const { return n_; }
+namespace udl {
 
-    std::string str() const {
-        return std::string(s_, n_);
+inline constexpr unsigned int operator"" _(const char *s, size_t) {
+  return str2tag(s);
+}
+
+} // namespace udl
+
+/*
+ * Semantic values
+ */
+struct SemanticValues : protected std::vector<any> {
+  // Input text
+  const char *path = nullptr;
+  const char *ss = nullptr;
+  const std::vector<size_t> *source_line_index = nullptr;
+
+  // Matched string
+  const char *c_str() const { return s_; }
+  size_t length() const { return n_; }
+
+  std::string str() const { return std::string(s_, n_); }
+
+  // Definition name
+  const std::string &name() const { return name_; }
+
+  std::vector<unsigned int> tags;
+
+  // Line number and column at which the matched string is
+  std::pair<size_t, size_t> line_info() const {
+    const auto &idx = *source_line_index;
+
+    auto cur = static_cast<size_t>(std::distance(ss, s_));
+    auto it = std::lower_bound(
+        idx.begin(), idx.end(), cur,
+        [](size_t element, size_t value) { return element < value; });
+
+    auto id = static_cast<size_t>(std::distance(idx.begin(), it));
+    auto off = cur - (id == 0 ? 0 : idx[id - 1] + 1);
+    return std::make_pair(id + 1, off + 1);
+  }
+
+  // Choice count
+  size_t choice_count() const { return choice_count_; }
+
+  // Choice number (0 based index)
+  size_t choice() const { return choice_; }
+
+  // Tokens
+  std::vector<std::pair<const char *, size_t>> tokens;
+
+  std::string token(size_t id = 0) const {
+    if (!tokens.empty()) {
+      assert(id < tokens.size());
+      const auto &tok = tokens[id];
+      return std::string(tok.first, tok.second);
     }
+    return std::string(s_, n_);
+  }
 
-    // Line number and column at which the matched string is
-    std::pair<size_t, size_t> line_info() const {
-        return peg::line_info(ss, s_);
-    }
+  // Transform the semantic value vector to another vector
+  template <typename T>
+  auto transform(size_t beg = 0, size_t end = static_cast<size_t>(-1)) const
+      -> vector<T> {
+    return this->transform(beg, end,
+                           [](const any &v) { return any_cast<T>(v); });
+  }
 
-    // Choice number (0 based index)
-    size_t      choice() const { return choice_; }
-
-    // Tokens
-    std::vector<std::pair<const char*, size_t>> tokens;
-
-    std::string token(size_t id = 0) const {
-        if (!tokens.empty()) {
-            assert(id < tokens.size());
-            const auto& tok = tokens[id];
-            return std::string(tok.first, tok.second);
-        }
-        return std::string(s_, n_);
-    }
-
-    // Transform the semantic value vector to another vector
-    template <typename T>
-    auto transform(size_t beg = 0, size_t end = static_cast<size_t>(-1)) const -> vector<T> {
-        return this->transform(beg, end, [](const any& v) { return v.get<T>(); });
-    }
-
-    SemanticValues() : s_(nullptr), n_(0), choice_(0) {}
-
-    using std::vector<any>::iterator;
-    using std::vector<any>::const_iterator;
-    using std::vector<any>::size;
-    using std::vector<any>::empty;
-    using std::vector<any>::assign;
-    using std::vector<any>::begin;
-    using std::vector<any>::end;
-    using std::vector<any>::rbegin;
-    using std::vector<any>::rend;
-    using std::vector<any>::operator[];
-    using std::vector<any>::at;
-    using std::vector<any>::resize;
-    using std::vector<any>::front;
-    using std::vector<any>::back;
-    using std::vector<any>::push_back;
-    using std::vector<any>::pop_back;
-    using std::vector<any>::insert;
-    using std::vector<any>::erase;
-    using std::vector<any>::clear;
-    using std::vector<any>::swap;
-    using std::vector<any>::emplace;
-    using std::vector<any>::emplace_back;
+  using std::vector<any>::iterator;
+  using std::vector<any>::const_iterator;
+  using std::vector<any>::size;
+  using std::vector<any>::empty;
+  using std::vector<any>::assign;
+  using std::vector<any>::begin;
+  using std::vector<any>::end;
+  using std::vector<any>::rbegin;
+  using std::vector<any>::rend;
+  using std::vector<any>::operator[];
+  using std::vector<any>::at;
+  using std::vector<any>::resize;
+  using std::vector<any>::front;
+  using std::vector<any>::back;
+  using std::vector<any>::push_back;
+  using std::vector<any>::pop_back;
+  using std::vector<any>::insert;
+  using std::vector<any>::erase;
+  using std::vector<any>::clear;
+  using std::vector<any>::swap;
+  using std::vector<any>::emplace;
+  using std::vector<any>::emplace_back;
 
 private:
-    friend class Context;
-    friend class PrioritizedChoice;
-    friend class Holder;
+  friend class Context;
+  friend class Sequence;
+  friend class PrioritizedChoice;
+  friend class Holder;
+  friend class PrecedenceClimbing;
 
-    const char* s_;
-    size_t      n_;
-    size_t      choice_;
+  const char *s_ = nullptr;
+  size_t n_ = 0;
+  size_t choice_count_ = 0;
+  size_t choice_ = 0;
+  std::string name_;
 
-    template <typename F>
-    auto transform(F f) const -> vector<typename std::remove_const<decltype(f(any()))>::type> {
-        vector<typename std::remove_const<decltype(f(any()))>::type> r;
-        for (const auto& v: *this) {
-            r.emplace_back(f(v));
-        }
-        return r;
+  template <typename F>
+  auto transform(F f) const
+      -> vector<typename std::remove_const<decltype(f(any()))>::type> {
+    vector<typename std::remove_const<decltype(f(any()))>::type> r;
+    for (const auto &v : *this) {
+      r.emplace_back(f(v));
     }
+    return r;
+  }
 
-    template <typename F>
-    auto transform(size_t beg, size_t end, F f) const -> vector<typename std::remove_const<decltype(f(any()))>::type> {
-        vector<typename std::remove_const<decltype(f(any()))>::type> r;
-        end = (std::min)(end, size());
-        for (size_t i = beg; i < end; i++) {
-            r.emplace_back(f((*this)[i]));
-        }
-        return r;
+  template <typename F>
+  auto transform(size_t beg, size_t end, F f) const
+      -> vector<typename std::remove_const<decltype(f(any()))>::type> {
+    vector<typename std::remove_const<decltype(f(any()))>::type> r;
+    end = (std::min)(end, size());
+    for (size_t i = beg; i < end; i++) {
+      r.emplace_back(f((*this)[i]));
     }
+    return r;
+  }
 };
 
 /*
  * Semantic action
  */
-template <
-    typename R, typename F,
-    typename std::enable_if<std::is_void<R>::value>::type*& = enabler,
-    typename... Args>
-any call(F fn, Args&&... args) {
-    fn(std::forward<Args>(args)...);
-    return any();
+template <typename R, typename F,
+          typename std::enable_if<std::is_void<R>::value,
+                                  std::nullptr_t>::type = nullptr,
+          typename... Args>
+any call(F fn, Args &&... args) {
+  fn(std::forward<Args>(args)...);
+  return any();
 }
 
-template <
-    typename R, typename F,
-    typename std::enable_if<std::is_same<typename std::remove_cv<R>::type, any>::value>::type*& = enabler,
-    typename... Args>
-any call(F fn, Args&&... args) {
-    return fn(std::forward<Args>(args)...);
+template <typename R, typename F,
+          typename std::enable_if<
+              std::is_same<typename std::remove_cv<R>::type, any>::value,
+              std::nullptr_t>::type = nullptr,
+          typename... Args>
+any call(F fn, Args &&... args) {
+  return fn(std::forward<Args>(args)...);
 }
 
-template <
-    typename R, typename F,
-    typename std::enable_if<
-        !std::is_void<R>::value &&
-        !std::is_same<typename std::remove_cv<R>::type, any>::value>::type*& = enabler,
-    typename... Args>
-any call(F fn, Args&&... args) {
-    return any(fn(std::forward<Args>(args)...));
+template <typename R, typename F,
+          typename std::enable_if<
+              !std::is_void<R>::value &&
+                  !std::is_same<typename std::remove_cv<R>::type, any>::value,
+              std::nullptr_t>::type = nullptr,
+          typename... Args>
+any call(F fn, Args &&... args) {
+  return any(fn(std::forward<Args>(args)...));
 }
 
-class Action
-{
+class Action {
 public:
-    Action() = default;
+  Action() = default;
+  Action(const Action &rhs) = default;
 
-    Action(const Action& rhs) : fn_(rhs.fn_) {}
+  template <typename F,
+            typename std::enable_if<!std::is_pointer<F>::value &&
+                                        !std::is_same<F, std::nullptr_t>::value,
+                                    std::nullptr_t>::type = nullptr>
+  Action(F fn) : fn_(make_adaptor(fn, &F::operator())) {}
 
-    template <typename F, typename std::enable_if<!std::is_pointer<F>::value && !std::is_same<F, std::nullptr_t>::value>::type*& = enabler>
-    Action(F fn) : fn_(make_adaptor(fn, &F::operator())) {}
+  template <typename F, typename std::enable_if<std::is_pointer<F>::value,
+                                                std::nullptr_t>::type = nullptr>
+  Action(F fn) : fn_(make_adaptor(fn, fn)) {}
 
-    template <typename F, typename std::enable_if<std::is_pointer<F>::value>::type*& = enabler>
-    Action(F fn) : fn_(make_adaptor(fn, fn)) {}
+  template <typename F,
+            typename std::enable_if<std::is_same<F, std::nullptr_t>::value,
+                                    std::nullptr_t>::type = nullptr>
+  Action(F /*fn*/) {}
 
-    template <typename F, typename std::enable_if<std::is_same<F, std::nullptr_t>::value>::type*& = enabler>
-    Action(F /*fn*/) {}
+  template <typename F,
+            typename std::enable_if<!std::is_pointer<F>::value &&
+                                        !std::is_same<F, std::nullptr_t>::value,
+                                    std::nullptr_t>::type = nullptr>
+  void operator=(F fn) {
+    fn_ = make_adaptor(fn, &F::operator());
+  }
 
-    template <typename F, typename std::enable_if<!std::is_pointer<F>::value && !std::is_same<F, std::nullptr_t>::value>::type*& = enabler>
-    void operator=(F fn) {
-        fn_ = make_adaptor(fn, &F::operator());
-    }
+  template <typename F, typename std::enable_if<std::is_pointer<F>::value,
+                                                std::nullptr_t>::type = nullptr>
+  void operator=(F fn) {
+    fn_ = make_adaptor(fn, fn);
+  }
 
-    template <typename F, typename std::enable_if<std::is_pointer<F>::value>::type*& = enabler>
-    void operator=(F fn) {
-        fn_ = make_adaptor(fn, fn);
-    }
+  template <typename F,
+            typename std::enable_if<std::is_same<F, std::nullptr_t>::value,
+                                    std::nullptr_t>::type = nullptr>
+  void operator=(F /*fn*/) {}
 
-    template <typename F, typename std::enable_if<std::is_same<F, std::nullptr_t>::value>::type*& = enabler>
-    void operator=(F /*fn*/) {}
+  Action &operator=(const Action &rhs) = default;
 
-    Action& operator=(const Action& rhs) = default;
+  operator bool() const { return bool(fn_); }
 
-    operator bool() const {
-        return bool(fn_);
-    }
-
-    any operator()(const SemanticValues& sv, any& dt) const {
-        return fn_(sv, dt);
-    }
+  any operator()(SemanticValues &sv, any &dt) const { return fn_(sv, dt); }
 
 private:
-    template <typename R>
-    struct TypeAdaptor {
-        TypeAdaptor(std::function<R (const SemanticValues& sv)> fn)
-            : fn_(fn) {}
-        any operator()(const SemanticValues& sv, any& /*dt*/) {
-            return call<R>(fn_, sv);
-        }
-        std::function<R (const SemanticValues& sv)> fn_;
-    };
-
-    template <typename R>
-    struct TypeAdaptor_c {
-        TypeAdaptor_c(std::function<R (const SemanticValues& sv, any& dt)> fn)
-            : fn_(fn) {}
-        any operator()(const SemanticValues& sv, any& dt) {
-            return call<R>(fn_, sv, dt);
-        }
-        std::function<R (const SemanticValues& sv, any& dt)> fn_;
-    };
-
-    typedef std::function<any (const SemanticValues& sv, any& dt)> Fty;
-
-    template<typename F, typename R>
-    Fty make_adaptor(F fn, R (F::* /*mf*/)(const SemanticValues& sv) const) {
-        return TypeAdaptor<R>(fn);
+  template <typename R> struct TypeAdaptor_sv {
+    TypeAdaptor_sv(std::function<R(SemanticValues &sv)> fn) : fn_(fn) {}
+    any operator()(SemanticValues &sv, any & /*dt*/) {
+      return call<R>(fn_, sv);
     }
+    std::function<R(SemanticValues &sv)> fn_;
+  };
 
-    template<typename F, typename R>
-    Fty make_adaptor(F fn, R (F::* /*mf*/)(const SemanticValues& sv)) {
-        return TypeAdaptor<R>(fn);
+  template <typename R> struct TypeAdaptor_csv {
+    TypeAdaptor_csv(std::function<R(const SemanticValues &sv)> fn) : fn_(fn) {}
+    any operator()(SemanticValues &sv, any & /*dt*/) {
+      return call<R>(fn_, sv);
     }
+    std::function<R(const SemanticValues &sv)> fn_;
+  };
 
-    template<typename F, typename R>
-    Fty make_adaptor(F fn, R (* /*mf*/)(const SemanticValues& sv)) {
-        return TypeAdaptor<R>(fn);
-    }
+  template <typename R> struct TypeAdaptor_sv_dt {
+    TypeAdaptor_sv_dt(std::function<R(SemanticValues &sv, any &dt)> fn)
+        : fn_(fn) {}
+    any operator()(SemanticValues &sv, any &dt) { return call<R>(fn_, sv, dt); }
+    std::function<R(SemanticValues &sv, any &dt)> fn_;
+  };
 
-    template<typename F, typename R>
-    Fty make_adaptor(F fn, R (F::* /*mf*/)(const SemanticValues& sv, any& dt) const) {
-        return TypeAdaptor_c<R>(fn);
-    }
+  template <typename R> struct TypeAdaptor_csv_dt {
+    TypeAdaptor_csv_dt(std::function<R(const SemanticValues &sv, any &dt)> fn)
+        : fn_(fn) {}
+    any operator()(SemanticValues &sv, any &dt) { return call<R>(fn_, sv, dt); }
+    std::function<R(const SemanticValues &sv, any &dt)> fn_;
+  };
 
-    template<typename F, typename R>
-    Fty make_adaptor(F fn, R (F::* /*mf*/)(const SemanticValues& sv, any& dt)) {
-        return TypeAdaptor_c<R>(fn);
-    }
+  typedef std::function<any(SemanticValues &sv, any &dt)> Fty;
 
-    template<typename F, typename R>
-    Fty make_adaptor(F fn, R(* /*mf*/)(const SemanticValues& sv, any& dt)) {
-        return TypeAdaptor_c<R>(fn);
-    }
+  template <typename F, typename R>
+  Fty make_adaptor(F fn, R (F::*)(SemanticValues &sv) const) {
+    return TypeAdaptor_sv<R>(fn);
+  }
 
-    Fty fn_;
+  template <typename F, typename R>
+  Fty make_adaptor(F fn, R (F::*)(const SemanticValues &sv) const) {
+    return TypeAdaptor_csv<R>(fn);
+  }
+
+  template <typename F, typename R>
+  Fty make_adaptor(F fn, R (F::*)(SemanticValues &sv)) {
+    return TypeAdaptor_sv<R>(fn);
+  }
+
+  template <typename F, typename R>
+  Fty make_adaptor(F fn, R (F::*)(const SemanticValues &sv)) {
+    return TypeAdaptor_csv<R>(fn);
+  }
+
+  template <typename F, typename R>
+  Fty make_adaptor(F fn, R (*)(SemanticValues &sv)) {
+    return TypeAdaptor_sv<R>(fn);
+  }
+
+  template <typename F, typename R>
+  Fty make_adaptor(F fn, R (*)(const SemanticValues &sv)) {
+    return TypeAdaptor_csv<R>(fn);
+  }
+
+  template <typename F, typename R>
+  Fty make_adaptor(F fn, R (F::*)(SemanticValues &sv, any &dt) const) {
+    return TypeAdaptor_sv_dt<R>(fn);
+  }
+
+  template <typename F, typename R>
+  Fty make_adaptor(F fn, R (F::*)(const SemanticValues &sv, any &dt) const) {
+    return TypeAdaptor_csv_dt<R>(fn);
+  }
+
+  template <typename F, typename R>
+  Fty make_adaptor(F fn, R (F::*)(SemanticValues &sv, any &dt)) {
+    return TypeAdaptor_sv_dt<R>(fn);
+  }
+
+  template <typename F, typename R>
+  Fty make_adaptor(F fn, R (F::*)(const SemanticValues &sv, any &dt)) {
+    return TypeAdaptor_csv_dt<R>(fn);
+  }
+
+  template <typename F, typename R>
+  Fty make_adaptor(F fn, R (*)(SemanticValues &sv, any &dt)) {
+    return TypeAdaptor_sv_dt<R>(fn);
+  }
+
+  template <typename F, typename R>
+  Fty make_adaptor(F fn, R (*)(const SemanticValues &sv, any &dt)) {
+    return TypeAdaptor_csv_dt<R>(fn);
+  }
+
+  Fty fn_;
 };
 
 /*
  * Semantic predicate
  */
-// Note: 'parse_error' exception class should be be used in sematic action handlers to reject the rule.
+// Note: 'parse_error' exception class should be be used in sematic action
+// handlers to reject the rule.
 struct parse_error {
-    parse_error() = default;
-    parse_error(const char* s) : s_(s) {}
-    const char* what() const { return s_.empty() ? nullptr : s_.c_str(); }
+  parse_error() = default;
+  parse_error(const char *s) : s_(s) {}
+  const char *what() const { return s_.empty() ? nullptr : s_.c_str(); }
+
 private:
-    std::string s_;
+  std::string s_;
 };
 
 /*
  * Result
  */
-inline bool success(size_t len) {
-    return len != static_cast<size_t>(-1);
-}
+inline bool success(size_t len) { return len != static_cast<size_t>(-1); }
 
-inline bool fail(size_t len) {
-    return len == static_cast<size_t>(-1);
-}
+inline bool fail(size_t len) { return len == static_cast<size_t>(-1); }
 
 /*
  * Context
@@ -947,1904 +1294,2833 @@ class Context;
 class Ope;
 class Definition;
 
-typedef std::function<void (const char* name, const char* s, size_t n, const SemanticValues& sv, const Context& c, const any& dt)> Tracer;
+typedef std::function<void(const char *name, const char *s, size_t n,
+                           const SemanticValues &sv, const Context &c,
+                           const any &dt)>
+    TracerEnter;
 
-class Context
-{
+typedef std::function<void(const char *name, const char *s, size_t n,
+                           const SemanticValues &sv, const Context &c,
+                           const any &dt, size_t)>
+    TracerLeave;
+
+class Context {
 public:
-    const char*                                  path;
-    const char*                                  s;
-    const size_t                                 l;
+  const char *path;
+  const char *s;
+  const size_t l;
+  std::vector<size_t> source_line_index;
 
-    const char*                                  error_pos;
-    const char*                                  message_pos;
-    std::string                                  message; // TODO: should be `int`.
+  const char *error_pos = nullptr;
+  const char *message_pos = nullptr;
+  std::string message; // TODO: should be `int`.
 
-    std::vector<std::shared_ptr<SemanticValues>> value_stack;
-    size_t                                       value_stack_size;
+  std::vector<std::shared_ptr<SemanticValues>> value_stack;
+  size_t value_stack_size = 0;
+  std::vector<std::vector<std::shared_ptr<Ope>>> args_stack;
 
-    size_t                                       nest_level;
+  bool in_token = false;
 
-    bool                                         in_token;
+  std::shared_ptr<Ope> whitespaceOpe;
+  bool in_whitespace = false;
 
-    std::shared_ptr<Ope>                         whitespaceOpe;
-    bool                                         in_whitespace;
+  std::shared_ptr<Ope> wordOpe;
 
-    std::shared_ptr<Ope>                         wordOpe;
+  std::vector<std::map<std::string, std::string>> capture_scope_stack;
+  size_t capture_scope_stack_size = 0;
 
-    std::unordered_map<std::string, std::string> captures;
+  const size_t def_count;
+  const bool enablePackratParsing;
+  std::vector<bool> cache_registered;
+  std::vector<bool> cache_success;
 
-    const size_t                                 def_count;
-    const bool                                   enablePackratParsing;
-    std::vector<bool>                            cache_registered;
-    std::vector<bool>                            cache_success;
+  std::map<std::pair<size_t, size_t>, std::tuple<size_t, any>> cache_values;
 
-    std::map<std::pair<size_t, size_t>, std::tuple<size_t, any>> cache_values;
+  TracerEnter tracer_enter;
+  TracerLeave tracer_leave;
 
-    std::function<void (const char*, const char*, size_t, const SemanticValues&, const Context&, const any&)> tracer;
+  Context(const char *a_path, const char *a_s, size_t a_l, size_t a_def_count,
+          std::shared_ptr<Ope> a_whitespaceOpe, std::shared_ptr<Ope> a_wordOpe,
+          bool a_enablePackratParsing, TracerEnter a_tracer_enter,
+          TracerLeave a_tracer_leave)
+      : path(a_path), s(a_s), l(a_l), whitespaceOpe(a_whitespaceOpe),
+        wordOpe(a_wordOpe), def_count(a_def_count),
+        enablePackratParsing(a_enablePackratParsing),
+        cache_registered(enablePackratParsing ? def_count * (l + 1) : 0),
+        cache_success(enablePackratParsing ? def_count * (l + 1) : 0),
+        tracer_enter(a_tracer_enter), tracer_leave(a_tracer_leave) {
 
-    Context(
-        const char*          a_path,
-        const char*          a_s,
-        size_t               a_l,
-        size_t               a_def_count,
-        std::shared_ptr<Ope> a_whitespaceOpe,
-        std::shared_ptr<Ope> a_wordOpe,
-        bool                 a_enablePackratParsing,
-        Tracer               a_tracer)
-        : path(a_path)
-        , s(a_s)
-        , l(a_l)
-        , error_pos(nullptr)
-        , message_pos(nullptr)
-        , value_stack_size(0)
-        , nest_level(0)
-        , in_token(false)
-        , whitespaceOpe(a_whitespaceOpe)
-        , in_whitespace(false)
-        , wordOpe(a_wordOpe)
-        , def_count(a_def_count)
-        , enablePackratParsing(a_enablePackratParsing)
-        , cache_registered(enablePackratParsing ? def_count * (l + 1) : 0)
-        , cache_success(enablePackratParsing ? def_count * (l + 1) : 0)
-        , tracer(a_tracer)
-    {
+    for (size_t pos = 0; pos < l; pos++) {
+      if (s[pos] == '\n') { source_line_index.push_back(pos); }
+    }
+    source_line_index.push_back(l);
+
+    args_stack.resize(1);
+
+    push_capture_scope();
+  }
+
+  ~Context() { assert(!value_stack_size); }
+
+  Context(const Context &) = delete;
+  Context(Context &&) = delete;
+  Context operator=(const Context &) = delete;
+
+  template <typename T>
+  void packrat(const char *a_s, size_t def_id, size_t &len, any &val, T fn) {
+    if (!enablePackratParsing) {
+      fn(val);
+      return;
     }
 
-    template <typename T>
-    void packrat(const char* a_s, size_t def_id, size_t& len, any& val, T fn) {
-        if (!enablePackratParsing) {
-            fn(val);
-            return;
-        }
+    auto col = a_s - s;
+    auto idx = def_count * static_cast<size_t>(col) + def_id;
 
-        auto col = a_s - s;
-        auto idx = def_count * static_cast<size_t>(col) + def_id;
+    if (cache_registered[idx]) {
+      if (cache_success[idx]) {
+        auto key = std::make_pair(col, def_id);
+        std::tie(len, val) = cache_values[key];
+        return;
+      } else {
+        len = static_cast<size_t>(-1);
+        return;
+      }
+    } else {
+      fn(val);
+      cache_registered[idx] = true;
+      cache_success[idx] = success(len);
+      if (success(len)) {
+        auto key = std::make_pair(col, def_id);
+        cache_values[key] = std::make_pair(len, val);
+      }
+      return;
+    }
+  }
 
-        if (cache_registered[idx]) {
-            if (cache_success[idx]) {
-                auto key = std::make_pair(col, def_id);
-                std::tie(len, val) = cache_values[key];
-                return;
-            } else {
-                len = static_cast<size_t>(-1);
-                return;
-            }
-        } else {
-            fn(val);
-            cache_registered[idx] = true;
-            cache_success[idx] = success(len);
-            if (success(len)) {
-                auto key = std::make_pair(col, def_id);
-                cache_values[key] = std::make_pair(len, val);
-            }
-            return;
-        }
+  SemanticValues &push() {
+    assert(value_stack_size <= value_stack.size());
+    if (value_stack_size == value_stack.size()) {
+      value_stack.emplace_back(std::make_shared<SemanticValues>());
+    } else {
+      auto &sv = *value_stack[value_stack_size];
+      if (!sv.empty()) {
+        sv.clear();
+        sv.tags.clear();
+      }
+      sv.s_ = nullptr;
+      sv.n_ = 0;
+      sv.choice_count_ = 0;
+      sv.choice_ = 0;
+      sv.tokens.clear();
     }
 
-    SemanticValues& push() {
-        assert(value_stack_size <= value_stack.size());
-        if (value_stack_size == value_stack.size()) {
-            value_stack.emplace_back(std::make_shared<SemanticValues>());
-        }
-        auto& sv = *value_stack[value_stack_size++];
-        if (!sv.empty()) {
-            sv.clear();
-        }
-        sv.path = path;
-        sv.ss = s;
-        sv.s_ = nullptr;
-        sv.n_ = 0;
-        sv.tokens.clear();
-        return sv;
-    }
+    auto &sv = *value_stack[value_stack_size++];
+    sv.path = path;
+    sv.ss = s;
+    sv.source_line_index = &source_line_index;
+    return sv;
+  }
 
-    void pop() {
-        value_stack_size--;
-    }
+  void pop() { value_stack_size--; }
 
-    void set_error_pos(const char* a_s) {
-        if (error_pos < a_s) error_pos = a_s;
-    }
+  void push_args(std::vector<std::shared_ptr<Ope>> &&args) {
+    args_stack.emplace_back(args);
+  }
 
-    void trace(const char* name, const char* a_s, size_t n, SemanticValues& sv, any& dt) const {
-        if (tracer) tracer(name, a_s, n, sv, *this, dt);
+  void pop_args() { args_stack.pop_back(); }
+
+  const std::vector<std::shared_ptr<Ope>> &top_args() const {
+    return args_stack[args_stack.size() - 1];
+  }
+
+  void push_capture_scope() {
+    assert(capture_scope_stack_size <= capture_scope_stack.size());
+    if (capture_scope_stack_size == capture_scope_stack.size()) {
+      capture_scope_stack.emplace_back(std::map<std::string, std::string>());
+    } else {
+      auto &cs = capture_scope_stack[capture_scope_stack_size];
+      cs.clear();
     }
+    capture_scope_stack_size++;
+  }
+
+  void pop_capture_scope() { capture_scope_stack_size--; }
+
+  void shift_capture_values() {
+    assert(capture_scope_stack.size() >= 2);
+    auto curr = &capture_scope_stack[capture_scope_stack_size - 1];
+    auto prev = curr - 1;
+    for (const auto &kv : *curr) {
+      (*prev)[kv.first] = kv.second;
+    }
+  }
+
+  void set_error_pos(const char *a_s) {
+    if (error_pos < a_s) error_pos = a_s;
+  }
+
+  void trace_enter(const char *name, const char *a_s, size_t n,
+                   SemanticValues &sv, any &dt) const;
+  void trace_leave(const char *name, const char *a_s, size_t n,
+                   SemanticValues &sv, any &dt, size_t len) const;
+  bool is_traceable(const Ope &ope) const;
+
+  mutable size_t next_trace_id = 0;
+  mutable std::list<size_t> trace_ids;
 };
 
 /*
  * Parser operators
  */
-class Ope
-{
+class Ope {
 public:
-    struct Visitor;
+  struct Visitor;
 
-    virtual ~Ope() {}
-    virtual size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const = 0;
-    virtual void accept(Visitor& v) = 0;
+  virtual ~Ope() {}
+  size_t parse(const char *s, size_t n, SemanticValues &sv, Context &c,
+               any &dt) const;
+  virtual size_t parse_core(const char *s, size_t n, SemanticValues &sv,
+                            Context &c, any &dt) const = 0;
+  virtual void accept(Visitor &v) = 0;
 };
 
-class Sequence : public Ope
-{
+class Sequence : public Ope {
 public:
-    Sequence(const Sequence& rhs) : opes_(rhs.opes_) {}
+  template <typename... Args>
+  Sequence(const Args &... args)
+      : opes_{static_cast<std::shared_ptr<Ope>>(args)...} {}
+  Sequence(const std::vector<std::shared_ptr<Ope>> &opes) : opes_(opes) {}
+  Sequence(std::vector<std::shared_ptr<Ope>> &&opes) : opes_(opes) {}
 
-#if defined(_MSC_VER) && _MSC_VER < 1900 // Less than Visual Studio 2015
-    // NOTE: Compiler Error C2797 on Visual Studio 2013
-    // "The C++ compiler in Visual Studio does not implement list
-    // initialization inside either a member initializer list or a non-static
-    // data member initializer. Before Visual Studio 2013 Update 3, this was
-    // silently converted to a function call, which could lead to bad code
-    // generation. Visual Studio 2013 Update 3 reports this as an error."
-    template <typename... Args>
-    Sequence(const Args& ...args) {
-        opes_ = std::vector<std::shared_ptr<Ope>>{ static_cast<std::shared_ptr<Ope>>(args)... };
+  size_t parse_core(const char *s, size_t n, SemanticValues &sv, Context &c,
+                    any &dt) const override {
+    auto &chldsv = c.push();
+    auto pop_se = make_scope_exit([&]() { c.pop(); });
+    size_t i = 0;
+    for (const auto &ope : opes_) {
+      const auto &rule = *ope;
+      auto len = rule.parse(s + i, n - i, chldsv, c, dt);
+      if (fail(len)) { return static_cast<size_t>(-1); }
+      i += len;
     }
-#else
-    template <typename... Args>
-    Sequence(const Args& ...args) : opes_{ static_cast<std::shared_ptr<Ope>>(args)... } {}
-#endif
-
-    Sequence(const std::vector<std::shared_ptr<Ope>>& opes) : opes_(opes) {}
-    Sequence(std::vector<std::shared_ptr<Ope>>&& opes) : opes_(opes) {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override {
-        c.trace("Sequence", s, n, sv, dt);
-        size_t i = 0;
-        for (const auto& ope : opes_) {
-            c.nest_level++;
-            auto se = make_scope_exit([&]() { c.nest_level--; });
-            const auto& rule = *ope;
-            auto len = rule.parse(s + i, n - i, sv, c, dt);
-            if (fail(len)) {
-                return static_cast<size_t>(-1);
-            }
-            i += len;
-        }
-        return i;
+    if (!chldsv.empty()) {
+      for (size_t j = 0; j < chldsv.size(); j++) {
+        sv.emplace_back(std::move(chldsv[j]));
+      }
     }
+    if (!chldsv.tags.empty()) {
+      for (size_t j = 0; j < chldsv.tags.size(); j++) {
+        sv.tags.emplace_back(std::move(chldsv.tags[j]));
+      }
+    }
+    sv.s_ = chldsv.c_str();
+    sv.n_ = chldsv.length();
+    if (!chldsv.tokens.empty()) {
+      for (size_t j = 0; j < chldsv.tokens.size(); j++) {
+        sv.tokens.emplace_back(std::move(chldsv.tokens[j]));
+      }
+    }
+    return i;
+  }
 
-    void accept(Visitor& v) override;
+  void accept(Visitor &v) override;
 
-    std::vector<std::shared_ptr<Ope>> opes_;
+  std::vector<std::shared_ptr<Ope>> opes_;
 };
 
-class PrioritizedChoice : public Ope
-{
+class PrioritizedChoice : public Ope {
 public:
-#if defined(_MSC_VER) && _MSC_VER < 1900 // Less than Visual Studio 2015
-    // NOTE: Compiler Error C2797 on Visual Studio 2013
-    // "The C++ compiler in Visual Studio does not implement list
-    // initialization inside either a member initializer list or a non-static
-    // data member initializer. Before Visual Studio 2013 Update 3, this was
-    // silently converted to a function call, which could lead to bad code
-    // generation. Visual Studio 2013 Update 3 reports this as an error."
-    template <typename... Args>
-    PrioritizedChoice(const Args& ...args) {
-        opes_ = std::vector<std::shared_ptr<Ope>>{ static_cast<std::shared_ptr<Ope>>(args)... };
-    }
-#else
-    template <typename... Args>
-    PrioritizedChoice(const Args& ...args) : opes_{ static_cast<std::shared_ptr<Ope>>(args)... } {}
-#endif
+  template <typename... Args>
+  PrioritizedChoice(const Args &... args)
+      : opes_{static_cast<std::shared_ptr<Ope>>(args)...} {}
+  PrioritizedChoice(const std::vector<std::shared_ptr<Ope>> &opes)
+      : opes_(opes) {}
+  PrioritizedChoice(std::vector<std::shared_ptr<Ope>> &&opes) : opes_(opes) {}
 
-    PrioritizedChoice(const std::vector<std::shared_ptr<Ope>>& opes) : opes_(opes) {}
-    PrioritizedChoice(std::vector<std::shared_ptr<Ope>>&& opes) : opes_(opes) {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override {
-        c.trace("PrioritizedChoice", s, n, sv, dt);
-        size_t id = 0;
-        for (const auto& ope : opes_) {
-            c.nest_level++;
-            auto& chldsv = c.push();
-            auto se = make_scope_exit([&]() {
-                c.nest_level--;
-                c.pop();
-            });
-            const auto& rule = *ope;
-            auto len = rule.parse(s, n, chldsv, c, dt);
-            if (success(len)) {
-                if (!chldsv.empty()) {
-                    sv.insert(sv.end(), chldsv.begin(), chldsv.end());
-                }
-                sv.s_ = chldsv.c_str();
-                sv.n_ = chldsv.length();
-                sv.choice_ = id;
-                sv.tokens.insert(sv.tokens.end(), chldsv.tokens.begin(), chldsv.tokens.end());
-                return len;
-            }
-            id++;
+  size_t parse_core(const char *s, size_t n, SemanticValues &sv, Context &c,
+                    any &dt) const override {
+    size_t id = 0;
+    for (const auto &ope : opes_) {
+      auto &chldsv = c.push();
+      c.push_capture_scope();
+      auto se = make_scope_exit([&]() {
+        c.pop();
+        c.pop_capture_scope();
+      });
+      const auto &rule = *ope;
+      auto len = rule.parse(s, n, chldsv, c, dt);
+      if (success(len)) {
+        if (!chldsv.empty()) {
+          for (size_t i = 0; i < chldsv.size(); i++) {
+            sv.emplace_back(std::move(chldsv[i]));
+          }
         }
-        return static_cast<size_t>(-1);
-    }
-
-    void accept(Visitor& v) override;
-
-    size_t size() const { return opes_.size();  }
-
-    std::vector<std::shared_ptr<Ope>> opes_;
-};
-
-class ZeroOrMore : public Ope
-{
-public:
-    ZeroOrMore(const std::shared_ptr<Ope>& ope) : ope_(ope) {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override {
-        c.trace("ZeroOrMore", s, n, sv, dt);
-        auto save_error_pos = c.error_pos;
-        size_t i = 0;
-        while (n - i > 0) {
-            c.nest_level++;
-            auto se = make_scope_exit([&]() { c.nest_level--; });
-            auto save_sv_size = sv.size();
-            auto save_tok_size = sv.tokens.size();
-            const auto& rule = *ope_;
-            auto len = rule.parse(s + i, n - i, sv, c, dt);
-            if (fail(len)) {
-                if (sv.size() != save_sv_size) {
-                    sv.erase(sv.begin() + static_cast<std::ptrdiff_t>(save_sv_size));
-                }
-                if (sv.tokens.size() != save_tok_size) {
-                    sv.tokens.erase(sv.tokens.begin() + static_cast<std::ptrdiff_t>(save_tok_size));
-                }
-                c.error_pos = save_error_pos;
-                break;
-            }
-            i += len;
+        if (!chldsv.tags.empty()) {
+          for (size_t i = 0; i < chldsv.tags.size(); i++) {
+            sv.tags.emplace_back(std::move(chldsv.tags[i]));
+          }
         }
-        return i;
-    }
-
-    void accept(Visitor& v) override;
-
-    std::shared_ptr<Ope> ope_;
-};
-
-class OneOrMore : public Ope
-{
-public:
-    OneOrMore(const std::shared_ptr<Ope>& ope) : ope_(ope) {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override {
-        c.trace("OneOrMore", s, n, sv, dt);
-        size_t len = 0;
-        {
-            c.nest_level++;
-            auto se = make_scope_exit([&]() { c.nest_level--; });
-            const auto& rule = *ope_;
-            len = rule.parse(s, n, sv, c, dt);
-            if (fail(len)) {
-                return static_cast<size_t>(-1);
-            }
+        sv.s_ = chldsv.c_str();
+        sv.n_ = chldsv.length();
+        sv.choice_count_ = opes_.size();
+        sv.choice_ = id;
+        if (!chldsv.tokens.empty()) {
+          for (size_t i = 0; i < chldsv.tokens.size(); i++) {
+            sv.tokens.emplace_back(std::move(chldsv.tokens[i]));
+          }
         }
-        auto save_error_pos = c.error_pos;
-        auto i = len;
-        while (n - i > 0) {
-            c.nest_level++;
-            auto se = make_scope_exit([&]() { c.nest_level--; });
-            auto save_sv_size = sv.size();
-            auto save_tok_size = sv.tokens.size();
-            const auto& rule = *ope_;
-            len = rule.parse(s + i, n - i, sv, c, dt);
-            if (fail(len)) {
-                if (sv.size() != save_sv_size) {
-                    sv.erase(sv.begin() + static_cast<std::ptrdiff_t>(save_sv_size));
-                }
-                if (sv.tokens.size() != save_tok_size) {
-                    sv.tokens.erase(sv.tokens.begin() + static_cast<std::ptrdiff_t>(save_tok_size));
-                }
-                c.error_pos = save_error_pos;
-                break;
-            }
-            i += len;
-        }
-        return i;
-    }
 
-    void accept(Visitor& v) override;
-
-    std::shared_ptr<Ope> ope_;
-};
-
-class Option : public Ope
-{
-public:
-    Option(const std::shared_ptr<Ope>& ope) : ope_(ope) {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override {
-        c.trace("Option", s, n, sv, dt);
-        auto save_error_pos = c.error_pos;
-        c.nest_level++;
-        auto save_sv_size = sv.size();
-        auto save_tok_size = sv.tokens.size();
-        auto se = make_scope_exit([&]() { c.nest_level--; });
-        const auto& rule = *ope_;
-        auto len = rule.parse(s, n, sv, c, dt);
-        if (success(len)) {
-            return len;
-        } else {
-            if (sv.size() != save_sv_size) {
-                sv.erase(sv.begin() + static_cast<std::ptrdiff_t>(save_sv_size));
-            }
-            if (sv.tokens.size() != save_tok_size) {
-                sv.tokens.erase(sv.tokens.begin() + static_cast<std::ptrdiff_t>(save_tok_size));
-            }
-            c.error_pos = save_error_pos;
-            return 0;
-        }
-    }
-
-    void accept(Visitor& v) override;
-
-    std::shared_ptr<Ope> ope_;
-};
-
-class AndPredicate : public Ope
-{
-public:
-    AndPredicate(const std::shared_ptr<Ope>& ope) : ope_(ope) {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override {
-        c.trace("AndPredicate", s, n, sv, dt);
-        c.nest_level++;
-        auto& chldsv = c.push();
-        auto se = make_scope_exit([&]() {
-            c.nest_level--;
-            c.pop();
-        });
-        const auto& rule = *ope_;
-        auto len = rule.parse(s, n, chldsv, c, dt);
-        if (success(len)) {
-            return 0;
-        } else {
-            return static_cast<size_t>(-1);
-        }
-    }
-
-    void accept(Visitor& v) override;
-
-    std::shared_ptr<Ope> ope_;
-};
-
-class NotPredicate : public Ope
-{
-public:
-    NotPredicate(const std::shared_ptr<Ope>& ope) : ope_(ope) {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override {
-        c.trace("NotPredicate", s, n, sv, dt);
-        auto save_error_pos = c.error_pos;
-        c.nest_level++;
-        auto& chldsv = c.push();
-        auto se = make_scope_exit([&]() {
-            c.nest_level--;
-            c.pop();
-        });
-        const auto& rule = *ope_;
-        auto len = rule.parse(s, n, chldsv, c, dt);
-        if (success(len)) {
-            c.set_error_pos(s);
-            return static_cast<size_t>(-1);
-        } else {
-            c.error_pos = save_error_pos;
-            return 0;
-        }
-    }
-
-    void accept(Visitor& v) override;
-
-    std::shared_ptr<Ope> ope_;
-};
-
-class LiteralString : public Ope
-{
-public:
-    LiteralString(const std::string& s)
-        : lit_(s)
-        , init_is_word_(false)
-        , is_word_(false)
-        {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override;
-
-    void accept(Visitor& v) override;
-
-    std::string lit_;
-	mutable bool init_is_word_;
-	mutable bool is_word_;
-};
-
-class CharacterClass : public Ope
-{
-public:
-    CharacterClass(const std::string& chars) : chars_(chars) {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override {
-        c.trace("CharacterClass", s, n, sv, dt);
-        // TODO: UTF8 support
-        if (n < 1) {
-            c.set_error_pos(s);
-            return static_cast<size_t>(-1);
-        }
-        auto ch = s[0];
-        auto i = 0u;
-        while (i < chars_.size()) {
-            if (i + 2 < chars_.size() && chars_[i + 1] == '-') {
-                if (chars_[i] <= ch && ch <= chars_[i + 2]) {
-                    return 1;
-                }
-                i += 3;
-            } else {
-                if (chars_[i] == ch) {
-                    return 1;
-                }
-                i += 1;
-            }
-        }
-        c.set_error_pos(s);
-        return static_cast<size_t>(-1);
-    }
-
-    void accept(Visitor& v) override;
-
-    std::string chars_;
-};
-
-class Character : public Ope
-{
-public:
-    Character(char ch) : ch_(ch) {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override {
-        c.trace("Character", s, n, sv, dt);
-        // TODO: UTF8 support
-        if (n < 1 || s[0] != ch_) {
-            c.set_error_pos(s);
-            return static_cast<size_t>(-1);
-        }
-        return 1;
-    }
-
-    void accept(Visitor& v) override;
-
-    char ch_;
-};
-
-class AnyCharacter : public Ope
-{
-public:
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override {
-        c.trace("AnyCharacter", s, n, sv, dt);
-        // TODO: UTF8 support
-        if (n < 1) {
-            c.set_error_pos(s);
-            return static_cast<size_t>(-1);
-        }
-        return 1;
-    }
-
-    void accept(Visitor& v) override;
-};
-
-class Capture : public Ope
-{
-public:
-    typedef std::function<void (const char* s, size_t n, Context& c)> MatchAction;
-
-    Capture(const std::shared_ptr<Ope>& ope, MatchAction ma)
-        : ope_(ope), match_action_(ma) {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override {
-        const auto& rule = *ope_;
-        auto len = rule.parse(s, n, sv, c, dt);
-        if (success(len) && match_action_) {
-            match_action_(s, len, c);
-        }
+        c.shift_capture_values();
         return len;
+      }
+      id++;
+    }
+    return static_cast<size_t>(-1);
+  }
+
+  void accept(Visitor &v) override;
+
+  size_t size() const { return opes_.size(); }
+
+  std::vector<std::shared_ptr<Ope>> opes_;
+};
+
+class Repetition : public Ope {
+public:
+  Repetition(const std::shared_ptr<Ope> &ope, size_t min, size_t max)
+      : ope_(ope), min_(min), max_(max) {}
+
+  size_t parse_core(const char *s, size_t n, SemanticValues &sv, Context &c,
+                    any &dt) const override {
+    size_t count = 0;
+    size_t i = 0;
+    while (count < min_) {
+      c.push_capture_scope();
+      auto se = make_scope_exit([&]() { c.pop_capture_scope(); });
+      const auto &rule = *ope_;
+      auto len = rule.parse(s + i, n - i, sv, c, dt);
+      if (success(len)) {
+        c.shift_capture_values();
+      } else {
+        return static_cast<size_t>(-1);
+      }
+      i += len;
+      count++;
     }
 
-    void accept(Visitor& v) override;
-
-    std::shared_ptr<Ope> ope_;
-
-private:
-    MatchAction match_action_;
-};
-
-class TokenBoundary : public Ope
-{
-public:
-    TokenBoundary(const std::shared_ptr<Ope>& ope) : ope_(ope) {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override;
-
-    void accept(Visitor& v) override;
-
-    std::shared_ptr<Ope> ope_;
-};
-
-class Ignore : public Ope
-{
-public:
-    Ignore(const std::shared_ptr<Ope>& ope) : ope_(ope) {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& /*sv*/, Context& c, any& dt) const override {
-        const auto& rule = *ope_;
-        auto& chldsv = c.push();
-        auto se = make_scope_exit([&]() {
-            c.pop();
-        });
-        return rule.parse(s, n, chldsv, c, dt);
-    }
-
-    void accept(Visitor& v) override;
-
-    std::shared_ptr<Ope> ope_;
-};
-
-typedef std::function<size_t (const char* s, size_t n, SemanticValues& sv, any& dt)> Parser;
-
-class WeakHolder : public Ope
-{
-public:
-    WeakHolder(const std::shared_ptr<Ope>& ope) : weak_(ope) {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override {
-        auto ope = weak_.lock();
-        assert(ope);
-        const auto& rule = *ope;
-        return rule.parse(s, n, sv, c, dt);
-    }
-
-    void accept(Visitor& v) override;
-
-    std::weak_ptr<Ope> weak_;
-};
-
-class Holder : public Ope
-{
-public:
-    Holder(Definition* outer)
-       : outer_(outer) {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override;
-
-    void accept(Visitor& v) override;
-
-    any reduce(const SemanticValues& sv, any& dt) const;
-
-    std::shared_ptr<Ope> ope_;
-    Definition*          outer_;
-
-    friend class Definition;
-};
-
-class DefinitionReference : public Ope
-{
-public:
-    DefinitionReference(
-        const std::unordered_map<std::string, Definition>& grammar, const std::string& name, const char* s)
-        : grammar_(grammar)
-        , name_(name)
-        , s_(s) {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override;
-
-    void accept(Visitor& v) override;
-
-    std::shared_ptr<Ope> get_rule() const;
-
-    const std::unordered_map<std::string, Definition>& grammar_;
-    const std::string                                  name_;
-    const char*                                        s_;
-
-private:
-    mutable std::once_flag                             init_;
-    mutable std::shared_ptr<Ope>                       rule_;
-};
-
-class Whitespace : public Ope
-{
-public:
-    Whitespace(const std::shared_ptr<Ope>& ope) : ope_(ope) {}
-
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override {
-        if (c.in_whitespace) {
-            return 0;
+    auto save_error_pos = c.error_pos;
+    while (n - i > 0 && count < max_) {
+      c.push_capture_scope();
+      auto se = make_scope_exit([&]() { c.pop_capture_scope(); });
+      auto save_sv_size = sv.size();
+      auto save_tok_size = sv.tokens.size();
+      const auto &rule = *ope_;
+      auto len = rule.parse(s + i, n - i, sv, c, dt);
+      if (success(len)) {
+        c.shift_capture_values();
+      } else {
+        if (sv.size() != save_sv_size) {
+          sv.erase(sv.begin() + static_cast<std::ptrdiff_t>(save_sv_size));
+          sv.tags.erase(sv.tags.begin() +
+                        static_cast<std::ptrdiff_t>(save_sv_size));
         }
-        c.in_whitespace = true;
-        auto se = make_scope_exit([&]() { c.in_whitespace = false; });
-        const auto& rule = *ope_;
-        return rule.parse(s, n, sv, c, dt);
+        if (sv.tokens.size() != save_tok_size) {
+          sv.tokens.erase(sv.tokens.begin() +
+                          static_cast<std::ptrdiff_t>(save_tok_size));
+        }
+        c.error_pos = save_error_pos;
+        break;
+      }
+      i += len;
+      count++;
+    }
+    return i;
+  }
+
+  void accept(Visitor &v) override;
+
+  bool is_zom() const {
+    return min_ == 0 && max_ == std::numeric_limits<size_t>::max();
+  }
+
+  static std::shared_ptr<Repetition> zom(const std::shared_ptr<Ope> &ope) {
+    return std::make_shared<Repetition>(ope, 0,
+                                        std::numeric_limits<size_t>::max());
+  }
+
+  static std::shared_ptr<Repetition> oom(const std::shared_ptr<Ope> &ope) {
+    return std::make_shared<Repetition>(ope, 1,
+                                        std::numeric_limits<size_t>::max());
+  }
+
+  static std::shared_ptr<Repetition> opt(const std::shared_ptr<Ope> &ope) {
+    return std::make_shared<Repetition>(ope, 0, 1);
+  }
+
+  std::shared_ptr<Ope> ope_;
+  size_t min_;
+  size_t max_;
+};
+
+class AndPredicate : public Ope {
+public:
+  AndPredicate(const std::shared_ptr<Ope> &ope) : ope_(ope) {}
+
+  size_t parse_core(const char *s, size_t n, SemanticValues & /*sv*/,
+                    Context &c, any &dt) const override {
+    auto &chldsv = c.push();
+    c.push_capture_scope();
+    auto se = make_scope_exit([&]() {
+      c.pop();
+      c.pop_capture_scope();
+    });
+    const auto &rule = *ope_;
+    auto len = rule.parse(s, n, chldsv, c, dt);
+    if (success(len)) {
+      return 0;
+    } else {
+      return static_cast<size_t>(-1);
+    }
+  }
+
+  void accept(Visitor &v) override;
+
+  std::shared_ptr<Ope> ope_;
+};
+
+class NotPredicate : public Ope {
+public:
+  NotPredicate(const std::shared_ptr<Ope> &ope) : ope_(ope) {}
+
+  size_t parse_core(const char *s, size_t n, SemanticValues & /*sv*/,
+                    Context &c, any &dt) const override {
+    auto save_error_pos = c.error_pos;
+    auto &chldsv = c.push();
+    c.push_capture_scope();
+    auto se = make_scope_exit([&]() {
+      c.pop();
+      c.pop_capture_scope();
+    });
+    const auto &rule = *ope_;
+    auto len = rule.parse(s, n, chldsv, c, dt);
+    if (success(len)) {
+      c.set_error_pos(s);
+      return static_cast<size_t>(-1);
+    } else {
+      c.error_pos = save_error_pos;
+      return 0;
+    }
+  }
+
+  void accept(Visitor &v) override;
+
+  std::shared_ptr<Ope> ope_;
+};
+
+class Dictionary : public Ope, public std::enable_shared_from_this<Dictionary> {
+public:
+  Dictionary(const std::vector<std::string> &v) : trie_(v) {}
+
+  size_t parse_core(const char *s, size_t n, SemanticValues &sv, Context &c,
+                    any &dt) const override;
+
+  void accept(Visitor &v) override;
+
+  Trie trie_;
+};
+
+class LiteralString : public Ope,
+                      public std::enable_shared_from_this<LiteralString> {
+public:
+  LiteralString(const std::string &s, bool ignore_case)
+      : lit_(s), ignore_case_(ignore_case), init_is_word_(false),
+        is_word_(false) {}
+
+  size_t parse_core(const char *s, size_t n, SemanticValues &sv, Context &c,
+                    any &dt) const override;
+
+  void accept(Visitor &v) override;
+
+  std::string lit_;
+  bool ignore_case_;
+  mutable bool init_is_word_;
+  mutable bool is_word_;
+};
+
+class CharacterClass : public Ope,
+                       public std::enable_shared_from_this<CharacterClass> {
+public:
+  CharacterClass(const std::string &s, bool negated) : negated_(negated) {
+    auto chars = decode(s.c_str(), s.length());
+    auto i = 0u;
+    while (i < chars.size()) {
+      if (i + 2 < chars.size() && chars[i + 1] == '-') {
+        auto cp1 = chars[i];
+        auto cp2 = chars[i + 2];
+        ranges_.emplace_back(std::make_pair(cp1, cp2));
+        i += 3;
+      } else {
+        auto cp = chars[i];
+        ranges_.emplace_back(std::make_pair(cp, cp));
+        i += 1;
+      }
+    }
+    assert(!ranges_.empty());
+  }
+
+  CharacterClass(const std::vector<std::pair<char32_t, char32_t>> &ranges,
+                 bool negated)
+      : ranges_(ranges), negated_(negated) {
+    assert(!ranges_.empty());
+  }
+
+  size_t parse_core(const char *s, size_t n, SemanticValues & /*sv*/,
+                    Context &c, any & /*dt*/) const override {
+    if (n < 1) {
+      c.set_error_pos(s);
+      return static_cast<size_t>(-1);
     }
 
-    void accept(Visitor& v) override;
+    char32_t cp = 0;
+    auto len = decode_codepoint(s, n, cp);
 
-    std::shared_ptr<Ope> ope_;
+    for (const auto &range : ranges_) {
+      if (range.first <= cp && cp <= range.second) {
+        if (negated_) {
+          c.set_error_pos(s);
+          return static_cast<size_t>(-1);
+        } else {
+          return len;
+        }
+      }
+    }
+
+    if (negated_) {
+      return len;
+    } else {
+      c.set_error_pos(s);
+      return static_cast<size_t>(-1);
+    }
+  }
+
+  void accept(Visitor &v) override;
+
+  std::vector<std::pair<char32_t, char32_t>> ranges_;
+  bool negated_;
 };
 
-class BackReference : public Ope
-{
+class Character : public Ope, public std::enable_shared_from_this<Character> {
 public:
-    BackReference(const std::string& name) : name_(name) {}
+  Character(char ch) : ch_(ch) {}
 
-    size_t parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const override;
+  size_t parse_core(const char *s, size_t n, SemanticValues & /*sv*/,
+                    Context &c, any & /*dt*/) const override {
+    if (n < 1 || s[0] != ch_) {
+      c.set_error_pos(s);
+      return static_cast<size_t>(-1);
+    }
+    return 1;
+  }
 
-    void accept(Visitor& v) override;
+  void accept(Visitor &v) override;
 
-    std::string name_;
+  char ch_;
 };
+
+class AnyCharacter : public Ope,
+                     public std::enable_shared_from_this<AnyCharacter> {
+public:
+  size_t parse_core(const char *s, size_t n, SemanticValues & /*sv*/,
+                    Context &c, any & /*dt*/) const override {
+    auto len = codepoint_length(s, n);
+    if (len < 1) {
+      c.set_error_pos(s);
+      return static_cast<size_t>(-1);
+    }
+    return len;
+  }
+
+  void accept(Visitor &v) override;
+};
+
+class CaptureScope : public Ope {
+public:
+  CaptureScope(const std::shared_ptr<Ope> &ope) : ope_(ope) {}
+
+  size_t parse_core(const char *s, size_t n, SemanticValues &sv, Context &c,
+                    any &dt) const override {
+    c.push_capture_scope();
+    auto se = make_scope_exit([&]() { c.pop_capture_scope(); });
+    const auto &rule = *ope_;
+    auto len = rule.parse(s, n, sv, c, dt);
+    return len;
+  }
+
+  void accept(Visitor &v) override;
+
+  std::shared_ptr<Ope> ope_;
+};
+
+class Capture : public Ope {
+public:
+  typedef std::function<void(const char *s, size_t n, Context &c)> MatchAction;
+
+  Capture(const std::shared_ptr<Ope> &ope, MatchAction ma)
+      : ope_(ope), match_action_(ma) {}
+
+  size_t parse_core(const char *s, size_t n, SemanticValues &sv, Context &c,
+                    any &dt) const override {
+    const auto &rule = *ope_;
+    auto len = rule.parse(s, n, sv, c, dt);
+    if (success(len) && match_action_) { match_action_(s, len, c); }
+    return len;
+  }
+
+  void accept(Visitor &v) override;
+
+  std::shared_ptr<Ope> ope_;
+  MatchAction match_action_;
+};
+
+class TokenBoundary : public Ope {
+public:
+  TokenBoundary(const std::shared_ptr<Ope> &ope) : ope_(ope) {}
+
+  size_t parse_core(const char *s, size_t n, SemanticValues &sv, Context &c,
+                    any &dt) const override;
+
+  void accept(Visitor &v) override;
+
+  std::shared_ptr<Ope> ope_;
+};
+
+class Ignore : public Ope {
+public:
+  Ignore(const std::shared_ptr<Ope> &ope) : ope_(ope) {}
+
+  size_t parse_core(const char *s, size_t n, SemanticValues & /*sv*/,
+                    Context &c, any &dt) const override {
+    const auto &rule = *ope_;
+    auto &chldsv = c.push();
+    auto se = make_scope_exit([&]() { c.pop(); });
+    return rule.parse(s, n, chldsv, c, dt);
+  }
+
+  void accept(Visitor &v) override;
+
+  std::shared_ptr<Ope> ope_;
+};
+
+typedef std::function<size_t(const char *s, size_t n, SemanticValues &sv,
+                             any &dt)>
+    Parser;
+
+class User : public Ope {
+public:
+  User(Parser fn) : fn_(fn) {}
+  size_t parse_core(const char *s, size_t n, SemanticValues &sv,
+                    Context & /*c*/, any &dt) const override {
+    assert(fn_);
+    return fn_(s, n, sv, dt);
+  }
+  void accept(Visitor &v) override;
+  std::function<size_t(const char *s, size_t n, SemanticValues &sv, any &dt)>
+      fn_;
+};
+
+class WeakHolder : public Ope {
+public:
+  WeakHolder(const std::shared_ptr<Ope> &ope) : weak_(ope) {}
+
+  size_t parse_core(const char *s, size_t n, SemanticValues &sv, Context &c,
+                    any &dt) const override {
+    auto ope = weak_.lock();
+    assert(ope);
+    const auto &rule = *ope;
+    return rule.parse(s, n, sv, c, dt);
+  }
+
+  void accept(Visitor &v) override;
+
+  std::weak_ptr<Ope> weak_;
+};
+
+class Holder : public Ope {
+public:
+  Holder(Definition *outer) : outer_(outer) {}
+
+  size_t parse_core(const char *s, size_t n, SemanticValues &sv, Context &c,
+                    any &dt) const override;
+
+  void accept(Visitor &v) override;
+
+  any reduce(SemanticValues &sv, any &dt) const;
+
+  const char *trace_name() const;
+
+  std::shared_ptr<Ope> ope_;
+  Definition *outer_;
+  mutable std::string trace_name_;
+
+  friend class Definition;
+};
+
+typedef std::unordered_map<std::string, Definition> Grammar;
+
+class Reference : public Ope, public std::enable_shared_from_this<Reference> {
+public:
+  Reference(const Grammar &grammar, const std::string &name, const char *s,
+            bool is_macro, const std::vector<std::shared_ptr<Ope>> &args)
+      : grammar_(grammar), name_(name), s_(s), is_macro_(is_macro), args_(args),
+        rule_(nullptr), iarg_(0) {}
+
+  size_t parse_core(const char *s, size_t n, SemanticValues &sv, Context &c,
+                    any &dt) const override;
+
+  void accept(Visitor &v) override;
+
+  std::shared_ptr<Ope> get_core_operator() const;
+
+  const Grammar &grammar_;
+  const std::string name_;
+  const char *s_;
+
+  const bool is_macro_;
+  const std::vector<std::shared_ptr<Ope>> args_;
+
+  Definition *rule_;
+  size_t iarg_;
+};
+
+class Whitespace : public Ope {
+public:
+  Whitespace(const std::shared_ptr<Ope> &ope) : ope_(ope) {}
+
+  size_t parse_core(const char *s, size_t n, SemanticValues &sv, Context &c,
+                    any &dt) const override {
+    if (c.in_whitespace) { return 0; }
+    c.in_whitespace = true;
+    auto se = make_scope_exit([&]() { c.in_whitespace = false; });
+    const auto &rule = *ope_;
+    return rule.parse(s, n, sv, c, dt);
+  }
+
+  void accept(Visitor &v) override;
+
+  std::shared_ptr<Ope> ope_;
+};
+
+class BackReference : public Ope {
+public:
+  BackReference(const std::string &name) : name_(name) {}
+
+  size_t parse_core(const char *s, size_t n, SemanticValues &sv, Context &c,
+                    any &dt) const override;
+
+  void accept(Visitor &v) override;
+
+  std::string name_;
+};
+
+class PrecedenceClimbing : public Ope {
+public:
+  using BinOpeInfo = std::map<std::string, std::pair<size_t, char>>;
+
+  PrecedenceClimbing(const std::shared_ptr<Ope> &atom,
+                     const std::shared_ptr<Ope> &binop, const BinOpeInfo &info,
+                     const Definition &rule)
+      : atom_(atom), binop_(binop), info_(info), rule_(rule) {}
+
+  size_t parse_core(const char *s, size_t n, SemanticValues &sv, Context &c,
+                    any &dt) const override {
+    return parse_expression(s, n, sv, c, dt, 0);
+  }
+
+  void accept(Visitor &v) override;
+
+  std::shared_ptr<Ope> atom_;
+  std::shared_ptr<Ope> binop_;
+  BinOpeInfo info_;
+  const Definition &rule_;
+
+private:
+  size_t parse_expression(const char *s, size_t n, SemanticValues &sv,
+                          Context &c, any &dt, size_t min_prec) const;
+
+  Definition &get_reference_for_binop(Context &c) const;
+};
+
+/*
+ * Factories
+ */
+template <typename... Args> std::shared_ptr<Ope> seq(Args &&... args) {
+  return std::make_shared<Sequence>(static_cast<std::shared_ptr<Ope>>(args)...);
+}
+
+template <typename... Args> std::shared_ptr<Ope> cho(Args &&... args) {
+  return std::make_shared<PrioritizedChoice>(
+      static_cast<std::shared_ptr<Ope>>(args)...);
+}
+
+inline std::shared_ptr<Ope> zom(const std::shared_ptr<Ope> &ope) {
+  return Repetition::zom(ope);
+}
+
+inline std::shared_ptr<Ope> oom(const std::shared_ptr<Ope> &ope) {
+  return Repetition::oom(ope);
+}
+
+inline std::shared_ptr<Ope> opt(const std::shared_ptr<Ope> &ope) {
+  return Repetition::opt(ope);
+}
+
+inline std::shared_ptr<Ope> rep(const std::shared_ptr<Ope> &ope, size_t min,
+                                size_t max) {
+  return std::make_shared<Repetition>(ope, min, max);
+}
+
+inline std::shared_ptr<Ope> apd(const std::shared_ptr<Ope> &ope) {
+  return std::make_shared<AndPredicate>(ope);
+}
+
+inline std::shared_ptr<Ope> npd(const std::shared_ptr<Ope> &ope) {
+  return std::make_shared<NotPredicate>(ope);
+}
+
+inline std::shared_ptr<Ope> dic(const std::vector<std::string> &v) {
+  return std::make_shared<Dictionary>(v);
+}
+
+inline std::shared_ptr<Ope> lit(const std::string &s) {
+  return std::make_shared<LiteralString>(s, false);
+}
+
+inline std::shared_ptr<Ope> liti(const std::string &s) {
+  return std::make_shared<LiteralString>(s, true);
+}
+
+inline std::shared_ptr<Ope> cls(const std::string &s) {
+  return std::make_shared<CharacterClass>(s, false);
+}
+
+inline std::shared_ptr<Ope>
+cls(const std::vector<std::pair<char32_t, char32_t>> &ranges) {
+  return std::make_shared<CharacterClass>(ranges, false);
+}
+
+inline std::shared_ptr<Ope> ncls(const std::string &s) {
+  return std::make_shared<CharacterClass>(s, true);
+}
+
+inline std::shared_ptr<Ope>
+ncls(const std::vector<std::pair<char32_t, char32_t>> &ranges) {
+  return std::make_shared<CharacterClass>(ranges, true);
+}
+
+inline std::shared_ptr<Ope> chr(char dt) {
+  return std::make_shared<Character>(dt);
+}
+
+inline std::shared_ptr<Ope> dot() { return std::make_shared<AnyCharacter>(); }
+
+inline std::shared_ptr<Ope> csc(const std::shared_ptr<Ope> &ope) {
+  return std::make_shared<CaptureScope>(ope);
+}
+
+inline std::shared_ptr<Ope> cap(const std::shared_ptr<Ope> &ope,
+                                Capture::MatchAction ma) {
+  return std::make_shared<Capture>(ope, ma);
+}
+
+inline std::shared_ptr<Ope> tok(const std::shared_ptr<Ope> &ope) {
+  return std::make_shared<TokenBoundary>(ope);
+}
+
+inline std::shared_ptr<Ope> ign(const std::shared_ptr<Ope> &ope) {
+  return std::make_shared<Ignore>(ope);
+}
+
+inline std::shared_ptr<Ope>
+usr(std::function<size_t(const char *s, size_t n, SemanticValues &sv, any &dt)>
+        fn) {
+  return std::make_shared<User>(fn);
+}
+
+inline std::shared_ptr<Ope> ref(const Grammar &grammar, const std::string &name,
+                                const char *s, bool is_macro,
+                                const std::vector<std::shared_ptr<Ope>> &args) {
+  return std::make_shared<Reference>(grammar, name, s, is_macro, args);
+}
+
+inline std::shared_ptr<Ope> wsp(const std::shared_ptr<Ope> &ope) {
+  return std::make_shared<Whitespace>(std::make_shared<Ignore>(ope));
+}
+
+inline std::shared_ptr<Ope> bkr(const std::string &name) {
+  return std::make_shared<BackReference>(name);
+}
+
+inline std::shared_ptr<Ope> pre(const std::shared_ptr<Ope> &atom,
+                                const std::shared_ptr<Ope> &binop,
+                                const PrecedenceClimbing::BinOpeInfo &info,
+                                const Definition &rule) {
+  return std::make_shared<PrecedenceClimbing>(atom, binop, info, rule);
+}
 
 /*
  * Visitor
  */
-struct Ope::Visitor
-{
-    virtual ~Visitor() {}
-    virtual void visit(Sequence& /*ope*/) {}
-    virtual void visit(PrioritizedChoice& /*ope*/) {}
-    virtual void visit(ZeroOrMore& /*ope*/) {}
-    virtual void visit(OneOrMore& /*ope*/) {}
-    virtual void visit(Option& /*ope*/) {}
-    virtual void visit(AndPredicate& /*ope*/) {}
-    virtual void visit(NotPredicate& /*ope*/) {}
-    virtual void visit(LiteralString& /*ope*/) {}
-    virtual void visit(CharacterClass& /*ope*/) {}
-    virtual void visit(Character& /*ope*/) {}
-    virtual void visit(AnyCharacter& /*ope*/) {}
-    virtual void visit(Capture& /*ope*/) {}
-    virtual void visit(TokenBoundary& /*ope*/) {}
-    virtual void visit(Ignore& /*ope*/) {}
-    virtual void visit(WeakHolder& /*ope*/) {}
-    virtual void visit(Holder& /*ope*/) {}
-    virtual void visit(DefinitionReference& /*ope*/) {}
-    virtual void visit(Whitespace& /*ope*/) {}
-    virtual void visit(BackReference& /*ope*/) {}
+struct Ope::Visitor {
+  virtual ~Visitor() {}
+  virtual void visit(Sequence & /*ope*/) {}
+  virtual void visit(PrioritizedChoice & /*ope*/) {}
+  virtual void visit(Repetition & /*ope*/) {}
+  virtual void visit(AndPredicate & /*ope*/) {}
+  virtual void visit(NotPredicate & /*ope*/) {}
+  virtual void visit(Dictionary & /*ope*/) {}
+  virtual void visit(LiteralString & /*ope*/) {}
+  virtual void visit(CharacterClass & /*ope*/) {}
+  virtual void visit(Character & /*ope*/) {}
+  virtual void visit(AnyCharacter & /*ope*/) {}
+  virtual void visit(CaptureScope & /*ope*/) {}
+  virtual void visit(Capture & /*ope*/) {}
+  virtual void visit(TokenBoundary & /*ope*/) {}
+  virtual void visit(Ignore & /*ope*/) {}
+  virtual void visit(User & /*ope*/) {}
+  virtual void visit(WeakHolder & /*ope*/) {}
+  virtual void visit(Holder & /*ope*/) {}
+  virtual void visit(Reference & /*ope*/) {}
+  virtual void visit(Whitespace & /*ope*/) {}
+  virtual void visit(BackReference & /*ope*/) {}
+  virtual void visit(PrecedenceClimbing & /*ope*/) {}
 };
 
-struct AssignIDToDefinition : public Ope::Visitor
-{
-    using Ope::Visitor::visit;
-
-    void visit(Sequence& ope) override {
-        for (auto op: ope.opes_) {
-            op->accept(*this);
-        }
-    }
-    void visit(PrioritizedChoice& ope) override {
-        for (auto op: ope.opes_) {
-            op->accept(*this);
-        }
-    }
-    void visit(ZeroOrMore& ope) override { ope.ope_->accept(*this); }
-    void visit(OneOrMore& ope) override { ope.ope_->accept(*this); }
-    void visit(Option& ope) override { ope.ope_->accept(*this); }
-    void visit(AndPredicate& ope) override { ope.ope_->accept(*this); }
-    void visit(NotPredicate& ope) override { ope.ope_->accept(*this); }
-    void visit(Capture& ope) override { ope.ope_->accept(*this); }
-    void visit(TokenBoundary& ope) override { ope.ope_->accept(*this); }
-    void visit(Ignore& ope) override { ope.ope_->accept(*this); }
-    void visit(WeakHolder& ope) override { ope.weak_.lock()->accept(*this); }
-    void visit(Holder& ope) override;
-    void visit(DefinitionReference& ope) override { ope.get_rule()->accept(*this); }
-
-    std::unordered_map<void*, size_t> ids;
+struct IsReference : public Ope::Visitor {
+  void visit(Reference & /*ope*/) override { is_reference = true; }
+  bool is_reference = false;
 };
 
-struct IsToken : public Ope::Visitor
-{
-    IsToken() : has_token_boundary(false), has_rule(false) {}
+struct TraceOpeName : public Ope::Visitor {
+  void visit(Sequence & /*ope*/) override { name = "Sequence"; }
+  void visit(PrioritizedChoice & /*ope*/) override {
+    name = "PrioritizedChoice";
+  }
+  void visit(Repetition & /*ope*/) override { name = "Repetition"; }
+  void visit(AndPredicate & /*ope*/) override { name = "AndPredicate"; }
+  void visit(NotPredicate & /*ope*/) override { name = "NotPredicate"; }
+  void visit(Dictionary & /*ope*/) override { name = "Dictionary"; }
+  void visit(LiteralString & /*ope*/) override { name = "LiteralString"; }
+  void visit(CharacterClass & /*ope*/) override { name = "CharacterClass"; }
+  void visit(Character & /*ope*/) override { name = "Character"; }
+  void visit(AnyCharacter & /*ope*/) override { name = "AnyCharacter"; }
+  void visit(CaptureScope & /*ope*/) override { name = "CaptureScope"; }
+  void visit(Capture & /*ope*/) override { name = "Capture"; }
+  void visit(TokenBoundary & /*ope*/) override { name = "TokenBoundary"; }
+  void visit(Ignore & /*ope*/) override { name = "Ignore"; }
+  void visit(User & /*ope*/) override { name = "User"; }
+  void visit(WeakHolder & /*ope*/) override { name = "WeakHolder"; }
+  void visit(Holder &ope) override { name = ope.trace_name(); }
+  void visit(Reference & /*ope*/) override { name = "Reference"; }
+  void visit(Whitespace & /*ope*/) override { name = "Whitespace"; }
+  void visit(BackReference & /*ope*/) override { name = "BackReference"; }
+  void visit(PrecedenceClimbing & /*ope*/) override {
+    name = "PrecedenceClimbing";
+  }
 
-    using Ope::Visitor::visit;
-
-    void visit(Sequence& ope) override {
-        for (auto op: ope.opes_) {
-            op->accept(*this);
-        }
-    }
-    void visit(PrioritizedChoice& ope) override {
-        for (auto op: ope.opes_) {
-            op->accept(*this);
-        }
-    }
-    void visit(ZeroOrMore& ope) override { ope.ope_->accept(*this); }
-    void visit(OneOrMore& ope) override { ope.ope_->accept(*this); }
-    void visit(Option& ope) override { ope.ope_->accept(*this); }
-    void visit(Capture& ope) override { ope.ope_->accept(*this); }
-    void visit(TokenBoundary& /*ope*/) override { has_token_boundary = true; }
-    void visit(Ignore& ope) override { ope.ope_->accept(*this); }
-    void visit(WeakHolder& ope) override { ope.weak_.lock()->accept(*this); }
-    void visit(DefinitionReference& /*ope*/) override { has_rule = true; }
-
-    bool is_token() const {
-        return has_token_boundary || !has_rule;
-    }
-
-    bool has_token_boundary;
-    bool has_rule;
+  const char *name = nullptr;
 };
 
-static const char* WHITESPACE_DEFINITION_NAME = "%whitespace";
-static const char* WORD_DEFINITION_NAME = "%word";
+struct AssignIDToDefinition : public Ope::Visitor {
+  void visit(Sequence &ope) override {
+    for (auto op : ope.opes_) {
+      op->accept(*this);
+    }
+  }
+  void visit(PrioritizedChoice &ope) override {
+    for (auto op : ope.opes_) {
+      op->accept(*this);
+    }
+  }
+  void visit(Repetition &ope) override { ope.ope_->accept(*this); }
+  void visit(AndPredicate &ope) override { ope.ope_->accept(*this); }
+  void visit(NotPredicate &ope) override { ope.ope_->accept(*this); }
+  void visit(CaptureScope &ope) override { ope.ope_->accept(*this); }
+  void visit(Capture &ope) override { ope.ope_->accept(*this); }
+  void visit(TokenBoundary &ope) override { ope.ope_->accept(*this); }
+  void visit(Ignore &ope) override { ope.ope_->accept(*this); }
+  void visit(WeakHolder &ope) override { ope.weak_.lock()->accept(*this); }
+  void visit(Holder &ope) override;
+  void visit(Reference &ope) override;
+  void visit(Whitespace &ope) override { ope.ope_->accept(*this); }
+
+  std::unordered_map<void *, size_t> ids;
+};
+
+struct IsLiteralToken : public Ope::Visitor {
+  void visit(PrioritizedChoice &ope) override {
+    for (auto op : ope.opes_) {
+      if (!IsLiteralToken::check(*op)) { return; }
+    }
+    result_ = true;
+  }
+
+  void visit(Dictionary & /*ope*/) override { result_ = true; }
+  void visit(LiteralString & /*ope*/) override { result_ = true; }
+
+  static bool check(Ope &ope) {
+    IsLiteralToken vis;
+    ope.accept(vis);
+    return vis.result_;
+  }
+
+private:
+  bool result_ = false;
+};
+
+struct TokenChecker : public Ope::Visitor {
+  void visit(Sequence &ope) override {
+    for (auto op : ope.opes_) {
+      op->accept(*this);
+    }
+  }
+  void visit(PrioritizedChoice &ope) override {
+    for (auto op : ope.opes_) {
+      op->accept(*this);
+    }
+  }
+  void visit(Repetition &ope) override { ope.ope_->accept(*this); }
+  void visit(CaptureScope &ope) override { ope.ope_->accept(*this); }
+  void visit(Capture &ope) override { ope.ope_->accept(*this); }
+  void visit(TokenBoundary & /*ope*/) override { has_token_boundary_ = true; }
+  void visit(Ignore &ope) override { ope.ope_->accept(*this); }
+  void visit(WeakHolder &ope) override { ope.weak_.lock()->accept(*this); }
+  void visit(Reference &ope) override;
+  void visit(Whitespace &ope) override { ope.ope_->accept(*this); }
+  void visit(PrecedenceClimbing &ope) override { ope.atom_->accept(*this); }
+
+  static bool is_token(Ope &ope) {
+    if (IsLiteralToken::check(ope)) { return true; }
+
+    TokenChecker vis;
+    ope.accept(vis);
+    return vis.has_token_boundary_ || !vis.has_rule_;
+  }
+
+private:
+  bool has_token_boundary_ = false;
+  bool has_rule_ = false;
+};
+
+struct DetectLeftRecursion : public Ope::Visitor {
+  DetectLeftRecursion(const std::string &name) : name_(name) {}
+
+  void visit(Sequence &ope) override {
+    for (auto op : ope.opes_) {
+      op->accept(*this);
+      if (done_) {
+        break;
+      } else if (error_s) {
+        done_ = true;
+        break;
+      }
+    }
+  }
+  void visit(PrioritizedChoice &ope) override {
+    for (auto op : ope.opes_) {
+      op->accept(*this);
+      if (error_s) {
+        done_ = true;
+        break;
+      }
+    }
+  }
+  void visit(Repetition &ope) override {
+    ope.ope_->accept(*this);
+    done_ = ope.min_ > 0;
+  }
+  void visit(AndPredicate &ope) override {
+    ope.ope_->accept(*this);
+    done_ = false;
+  }
+  void visit(NotPredicate &ope) override {
+    ope.ope_->accept(*this);
+    done_ = false;
+  }
+  void visit(Dictionary & /*ope*/) override { done_ = true; }
+  void visit(LiteralString &ope) override { done_ = !ope.lit_.empty(); }
+  void visit(CharacterClass & /*ope*/) override { done_ = true; }
+  void visit(Character & /*ope*/) override { done_ = true; }
+  void visit(AnyCharacter & /*ope*/) override { done_ = true; }
+  void visit(CaptureScope &ope) override { ope.ope_->accept(*this); }
+  void visit(Capture &ope) override { ope.ope_->accept(*this); }
+  void visit(TokenBoundary &ope) override { ope.ope_->accept(*this); }
+  void visit(Ignore &ope) override { ope.ope_->accept(*this); }
+  void visit(User & /*ope*/) override { done_ = true; }
+  void visit(WeakHolder &ope) override { ope.weak_.lock()->accept(*this); }
+  void visit(Holder &ope) override { ope.ope_->accept(*this); }
+  void visit(Reference &ope) override;
+  void visit(Whitespace &ope) override { ope.ope_->accept(*this); }
+  void visit(BackReference & /*ope*/) override { done_ = true; }
+  void visit(PrecedenceClimbing &ope) override { ope.atom_->accept(*this); }
+
+  const char *error_s = nullptr;
+
+private:
+  std::string name_;
+  std::set<std::string> refs_;
+  bool done_ = false;
+};
+
+struct HasEmptyElement : public Ope::Visitor {
+  HasEmptyElement(std::list<std::pair<const char *, std::string>> &refs)
+      : refs_(refs) {}
+
+  void visit(Sequence &ope) override {
+    bool save_is_empty = false;
+    const char *save_error_s = nullptr;
+    std::string save_error_name;
+    for (auto op : ope.opes_) {
+      op->accept(*this);
+      if (!is_empty) { return; }
+      save_is_empty = is_empty;
+      save_error_s = error_s;
+      save_error_name = error_name;
+      is_empty = false;
+      error_name.clear();
+    }
+    is_empty = save_is_empty;
+    error_s = save_error_s;
+    error_name = save_error_name;
+  }
+  void visit(PrioritizedChoice &ope) override {
+    for (auto op : ope.opes_) {
+      op->accept(*this);
+      if (is_empty) { return; }
+    }
+  }
+  void visit(Repetition &ope) override {
+    if (ope.min_ == 0) {
+      set_error();
+    } else {
+      ope.ope_->accept(*this);
+    }
+  }
+  void visit(AndPredicate & /*ope*/) override { set_error(); }
+  void visit(NotPredicate & /*ope*/) override { set_error(); }
+  void visit(CaptureScope &ope) override { ope.ope_->accept(*this); }
+  void visit(Capture &ope) override { ope.ope_->accept(*this); }
+  void visit(TokenBoundary &ope) override { ope.ope_->accept(*this); }
+  void visit(Ignore &ope) override { ope.ope_->accept(*this); }
+  void visit(WeakHolder &ope) override { ope.weak_.lock()->accept(*this); }
+  void visit(Holder &ope) override { ope.ope_->accept(*this); }
+  void visit(Reference &ope) override;
+  void visit(Whitespace &ope) override { ope.ope_->accept(*this); }
+  void visit(PrecedenceClimbing &ope) override { ope.atom_->accept(*this); }
+
+  bool is_empty = false;
+  const char *error_s = nullptr;
+  std::string error_name;
+
+private:
+  void set_error() {
+    is_empty = true;
+    error_s = refs_.back().first;
+    error_name = refs_.back().second;
+  }
+  std::list<std::pair<const char *, std::string>> &refs_;
+};
+
+struct DetectInfiniteLoop : public Ope::Visitor {
+  DetectInfiniteLoop(const char *s, const std::string &name) {
+    refs_.emplace_back(s, name);
+  }
+
+  void visit(Sequence &ope) override {
+    for (auto op : ope.opes_) {
+      op->accept(*this);
+      if (has_error) { return; }
+    }
+  }
+  void visit(PrioritizedChoice &ope) override {
+    for (auto op : ope.opes_) {
+      op->accept(*this);
+      if (has_error) { return; }
+    }
+  }
+  void visit(Repetition &ope) override {
+    if (ope.max_ == std::numeric_limits<size_t>::max()) {
+      HasEmptyElement vis(refs_);
+      ope.ope_->accept(vis);
+      if (vis.is_empty) {
+        has_error = true;
+        error_s = vis.error_s;
+        error_name = vis.error_name;
+      }
+    } else {
+      ope.ope_->accept(*this);
+    }
+  }
+  void visit(AndPredicate &ope) override { ope.ope_->accept(*this); }
+  void visit(NotPredicate &ope) override { ope.ope_->accept(*this); }
+  void visit(CaptureScope &ope) override { ope.ope_->accept(*this); }
+  void visit(Capture &ope) override { ope.ope_->accept(*this); }
+  void visit(TokenBoundary &ope) override { ope.ope_->accept(*this); }
+  void visit(Ignore &ope) override { ope.ope_->accept(*this); }
+  void visit(WeakHolder &ope) override { ope.weak_.lock()->accept(*this); }
+  void visit(Holder &ope) override { ope.ope_->accept(*this); }
+  void visit(Reference &ope) override;
+  void visit(Whitespace &ope) override { ope.ope_->accept(*this); }
+  void visit(PrecedenceClimbing &ope) override { ope.atom_->accept(*this); }
+
+  bool has_error = false;
+  const char *error_s = nullptr;
+  std::string error_name;
+
+private:
+  std::list<std::pair<const char *, std::string>> refs_;
+};
+
+struct ReferenceChecker : public Ope::Visitor {
+  ReferenceChecker(const Grammar &grammar,
+                   const std::vector<std::string> &params)
+      : grammar_(grammar), params_(params) {}
+
+  void visit(Sequence &ope) override {
+    for (auto op : ope.opes_) {
+      op->accept(*this);
+    }
+  }
+  void visit(PrioritizedChoice &ope) override {
+    for (auto op : ope.opes_) {
+      op->accept(*this);
+    }
+  }
+  void visit(Repetition &ope) override { ope.ope_->accept(*this); }
+  void visit(AndPredicate &ope) override { ope.ope_->accept(*this); }
+  void visit(NotPredicate &ope) override { ope.ope_->accept(*this); }
+  void visit(CaptureScope &ope) override { ope.ope_->accept(*this); }
+  void visit(Capture &ope) override { ope.ope_->accept(*this); }
+  void visit(TokenBoundary &ope) override { ope.ope_->accept(*this); }
+  void visit(Ignore &ope) override { ope.ope_->accept(*this); }
+  void visit(WeakHolder &ope) override { ope.weak_.lock()->accept(*this); }
+  void visit(Holder &ope) override { ope.ope_->accept(*this); }
+  void visit(Reference &ope) override;
+  void visit(Whitespace &ope) override { ope.ope_->accept(*this); }
+  void visit(PrecedenceClimbing &ope) override { ope.atom_->accept(*this); }
+
+  std::unordered_map<std::string, const char *> error_s;
+  std::unordered_map<std::string, std::string> error_message;
+
+private:
+  const Grammar &grammar_;
+  const std::vector<std::string> &params_;
+};
+
+struct LinkReferences : public Ope::Visitor {
+  LinkReferences(Grammar &grammar, const std::vector<std::string> &params)
+      : grammar_(grammar), params_(params) {}
+
+  void visit(Sequence &ope) override {
+    for (auto op : ope.opes_) {
+      op->accept(*this);
+    }
+  }
+  void visit(PrioritizedChoice &ope) override {
+    for (auto op : ope.opes_) {
+      op->accept(*this);
+    }
+  }
+  void visit(Repetition &ope) override { ope.ope_->accept(*this); }
+  void visit(AndPredicate &ope) override { ope.ope_->accept(*this); }
+  void visit(NotPredicate &ope) override { ope.ope_->accept(*this); }
+  void visit(CaptureScope &ope) override { ope.ope_->accept(*this); }
+  void visit(Capture &ope) override { ope.ope_->accept(*this); }
+  void visit(TokenBoundary &ope) override { ope.ope_->accept(*this); }
+  void visit(Ignore &ope) override { ope.ope_->accept(*this); }
+  void visit(WeakHolder &ope) override { ope.weak_.lock()->accept(*this); }
+  void visit(Holder &ope) override { ope.ope_->accept(*this); }
+  void visit(Reference &ope) override;
+  void visit(Whitespace &ope) override { ope.ope_->accept(*this); }
+  void visit(PrecedenceClimbing &ope) override { ope.atom_->accept(*this); }
+
+private:
+  Grammar &grammar_;
+  const std::vector<std::string> &params_;
+};
+
+struct FindReference : public Ope::Visitor {
+  FindReference(const std::vector<std::shared_ptr<Ope>> &args,
+                const std::vector<std::string> &params)
+      : args_(args), params_(params) {}
+
+  void visit(Sequence &ope) override {
+    std::vector<std::shared_ptr<Ope>> opes;
+    for (auto o : ope.opes_) {
+      o->accept(*this);
+      opes.push_back(found_ope);
+    }
+    found_ope = std::make_shared<Sequence>(opes);
+  }
+  void visit(PrioritizedChoice &ope) override {
+    std::vector<std::shared_ptr<Ope>> opes;
+    for (auto o : ope.opes_) {
+      o->accept(*this);
+      opes.push_back(found_ope);
+    }
+    found_ope = std::make_shared<PrioritizedChoice>(opes);
+  }
+  void visit(Repetition &ope) override {
+    ope.ope_->accept(*this);
+    found_ope = rep(found_ope, ope.min_, ope.max_);
+  }
+  void visit(AndPredicate &ope) override {
+    ope.ope_->accept(*this);
+    found_ope = apd(found_ope);
+  }
+  void visit(NotPredicate &ope) override {
+    ope.ope_->accept(*this);
+    found_ope = npd(found_ope);
+  }
+  void visit(Dictionary &ope) override { found_ope = ope.shared_from_this(); }
+  void visit(LiteralString &ope) override {
+    found_ope = ope.shared_from_this();
+  }
+  void visit(CharacterClass &ope) override {
+    found_ope = ope.shared_from_this();
+  }
+  void visit(Character &ope) override { found_ope = ope.shared_from_this(); }
+  void visit(AnyCharacter &ope) override { found_ope = ope.shared_from_this(); }
+  void visit(CaptureScope &ope) override {
+    ope.ope_->accept(*this);
+    found_ope = csc(found_ope);
+  }
+  void visit(Capture &ope) override {
+    ope.ope_->accept(*this);
+    found_ope = cap(found_ope, ope.match_action_);
+  }
+  void visit(TokenBoundary &ope) override {
+    ope.ope_->accept(*this);
+    found_ope = tok(found_ope);
+  }
+  void visit(Ignore &ope) override {
+    ope.ope_->accept(*this);
+    found_ope = ign(found_ope);
+  }
+  void visit(WeakHolder &ope) override { ope.weak_.lock()->accept(*this); }
+  void visit(Holder &ope) override { ope.ope_->accept(*this); }
+  void visit(Reference &ope) override;
+  void visit(Whitespace &ope) override {
+    ope.ope_->accept(*this);
+    found_ope = wsp(found_ope);
+  }
+  void visit(PrecedenceClimbing &ope) override {
+    ope.atom_->accept(*this);
+    found_ope = csc(found_ope);
+  }
+
+  std::shared_ptr<Ope> found_ope;
+
+private:
+  const std::vector<std::shared_ptr<Ope>> &args_;
+  const std::vector<std::string> &params_;
+};
+
+struct IsPrioritizedChoice : public Ope::Visitor {
+  void visit(PrioritizedChoice & /*ope*/) override { result_ = true; }
+
+  static bool check(Ope &ope) {
+    IsPrioritizedChoice vis;
+    ope.accept(vis);
+    return vis.result_;
+  }
+
+private:
+  bool result_ = false;
+};
+
+/*
+ * Keywords
+ */
+static const char *WHITESPACE_DEFINITION_NAME = "%whitespace";
+static const char *WORD_DEFINITION_NAME = "%word";
 
 /*
  * Definition
  */
-class Definition
-{
+class Definition {
 public:
-    struct Result {
-        bool              ret;
-        size_t            len;
-        const char*       error_pos;
-        const char*       message_pos;
-        const std::string message;
-    };
+  struct Result {
+    bool ret;
+    size_t len;
+    const char *error_pos;
+    const char *message_pos;
+    const std::string message;
+  };
 
-    Definition()
-        : ignoreSemanticValue(false)
-        , enablePackratParsing(false)
-        , is_token(false)
-        , has_token_boundary(false)
-        , holder_(std::make_shared<Holder>(this)) {}
+  Definition() : holder_(std::make_shared<Holder>(this)) {}
 
-    Definition(const Definition& rhs)
-        : name(rhs.name)
-        , ignoreSemanticValue(false)
-        , enablePackratParsing(false)
-        , is_token(false)
-        , has_token_boundary(false)
-        , holder_(rhs.holder_)
-    {
-        holder_->outer_ = this;
+  Definition(const Definition &rhs) : name(rhs.name), holder_(rhs.holder_) {
+    holder_->outer_ = this;
+  }
+
+  Definition(const std::shared_ptr<Ope> &ope)
+      : holder_(std::make_shared<Holder>(this)) {
+    *this <= ope;
+  }
+
+  operator std::shared_ptr<Ope>() {
+    return std::make_shared<WeakHolder>(holder_);
+  }
+
+  Definition &operator<=(const std::shared_ptr<Ope> &ope) {
+    holder_->ope_ = ope;
+    return *this;
+  }
+
+  Result parse(const char *s, size_t n, const char *path = nullptr) const {
+    SemanticValues sv;
+    any dt;
+    return parse_core(s, n, sv, dt, path);
+  }
+
+  Result parse(const char *s, const char *path = nullptr) const {
+    auto n = strlen(s);
+    return parse(s, n, path);
+  }
+
+  Result parse(const char *s, size_t n, any &dt,
+               const char *path = nullptr) const {
+    SemanticValues sv;
+    return parse_core(s, n, sv, dt, path);
+  }
+
+  Result parse(const char *s, any &dt, const char *path = nullptr) const {
+    auto n = strlen(s);
+    return parse(s, n, dt, path);
+  }
+
+  template <typename T>
+  Result parse_and_get_value(const char *s, size_t n, T &val,
+                             const char *path = nullptr) const {
+    SemanticValues sv;
+    any dt;
+    auto r = parse_core(s, n, sv, dt, path);
+    if (r.ret && !sv.empty() && sv.front().has_value()) {
+      val = any_cast<T>(sv[0]);
     }
+    return r;
+  }
 
-    Definition(Definition&& rhs)
-        : name(std::move(rhs.name))
-        , ignoreSemanticValue(rhs.ignoreSemanticValue)
-        , whitespaceOpe(rhs.whitespaceOpe)
-        , wordOpe(rhs.wordOpe)
-        , enablePackratParsing(rhs.enablePackratParsing)
-        , is_token(rhs.is_token)
-        , has_token_boundary(rhs.has_token_boundary)
-        , holder_(std::move(rhs.holder_))
-    {
-        holder_->outer_ = this;
+  template <typename T>
+  Result parse_and_get_value(const char *s, T &val,
+                             const char *path = nullptr) const {
+    auto n = strlen(s);
+    return parse_and_get_value(s, n, val, path);
+  }
+
+  template <typename T>
+  Result parse_and_get_value(const char *s, size_t n, any &dt, T &val,
+                             const char *path = nullptr) const {
+    SemanticValues sv;
+    auto r = parse_core(s, n, sv, dt, path);
+    if (r.ret && !sv.empty() && sv.front().has_value()) {
+      val = any_cast<T>(sv[0]);
     }
+    return r;
+  }
 
-    Definition(const std::shared_ptr<Ope>& ope)
-        : ignoreSemanticValue(false)
-        , enablePackratParsing(false)
-        , is_token(false)
-        , has_token_boundary(false)
-        , holder_(std::make_shared<Holder>(this))
-    {
-        *this <= ope;
-    }
+  template <typename T>
+  Result parse_and_get_value(const char *s, any &dt, T &val,
+                             const char *path = nullptr) const {
+    auto n = strlen(s);
+    return parse_and_get_value(s, n, dt, val, path);
+  }
 
-    operator std::shared_ptr<Ope>() {
-        return std::make_shared<WeakHolder>(holder_);
-    }
+  Action operator=(Action a) {
+    action = a;
+    return a;
+  }
 
-    Definition& operator<=(const std::shared_ptr<Ope>& ope) {
-        IsToken isToken;
-        ope->accept(isToken);
-        is_token = isToken.is_token();
-        has_token_boundary = isToken.has_token_boundary;
+  template <typename T> Definition &operator,(T fn) {
+    operator=(fn);
+    return *this;
+  }
 
-        holder_->ope_ = ope;
+  Definition &operator~() {
+    ignoreSemanticValue = true;
+    return *this;
+  }
 
-        return *this;
-    }
+  void accept(Ope::Visitor &v) { holder_->accept(v); }
 
-    Result parse(const char* s, size_t n, const char* path = nullptr) const {
-        SemanticValues sv;
-        any dt;
-        return parse_core(s, n, sv, dt, path);
-    }
+  std::shared_ptr<Ope> get_core_operator() const { return holder_->ope_; }
 
-    Result parse(const char* s, const char* path = nullptr) const {
-        auto n = strlen(s);
-        return parse(s, n, path);
-    }
+  bool is_token() const {
+    std::call_once(is_token_init_, [this]() {
+      is_token_ = TokenChecker::is_token(*get_core_operator());
+    });
+    return is_token_;
+  }
 
-    Result parse(const char* s, size_t n, any& dt, const char* path = nullptr) const {
-        SemanticValues sv;
-        return parse_core(s, n, sv, dt, path);
-    }
+  std::string name;
+  const char *s_ = nullptr;
 
-    Result parse(const char* s, any& dt, const char* path = nullptr) const {
-        auto n = strlen(s);
-        return parse(s, n, dt, path);
-    }
-
-    template <typename T>
-    Result parse_and_get_value(const char* s, size_t n, T& val, const char* path = nullptr) const {
-        SemanticValues sv;
-        any dt;
-        auto r = parse_core(s, n, sv, dt, path);
-        if (r.ret && !sv.empty() && !sv.front().is_undefined()) {
-            val = sv[0].get<T>();
-        }
-        return r;
-    }
-
-    template <typename T>
-    Result parse_and_get_value(const char* s, T& val, const char* path = nullptr) const {
-        auto n = strlen(s);
-        return parse_and_get_value(s, n, val, path);
-    }
-
-    template <typename T>
-    Result parse_and_get_value(const char* s, size_t n, any& dt, T& val, const char* path = nullptr) const {
-        SemanticValues sv;
-        auto r = parse_core(s, n, sv, dt, path);
-        if (r.ret && !sv.empty() && !sv.front().is_undefined()) {
-            val = sv[0].get<T>();
-        }
-        return r;
-    }
-
-    template <typename T>
-    Result parse_and_get_value(const char* s, any& dt, T& val, const char* path = nullptr) const {
-        auto n = strlen(s);
-        return parse_and_get_value(s, n, dt, val, path);
-    }
-
-    Definition& operator=(Action a) {
-        action = a;
-        return *this;
-    }
-
-    template <typename T>
-    Definition& operator,(T fn) {
-        operator=(fn);
-        return *this;
-    }
-
-    Definition& operator~() {
-        ignoreSemanticValue = true;
-        return *this;
-    }
-
-    void accept(Ope::Visitor& v) {
-        holder_->accept(v);
-    }
-
-    std::shared_ptr<Ope> get_core_operator() {
-        return holder_->ope_;
-    }
-
-    std::string                    name;
-    size_t                         id;
-    Action                         action;
-    std::function<void (any& dt)>  enter;
-    std::function<void (any& dt)>  leave;
-    std::function<std::string ()>  error_message;
-    bool                           ignoreSemanticValue;
-    std::shared_ptr<Ope>           whitespaceOpe;
-    std::shared_ptr<Ope>           wordOpe;
-    bool                           enablePackratParsing;
-    bool                           is_token;
-    bool                           has_token_boundary;
-    Tracer                         tracer;
+  size_t id = 0;
+  Action action;
+  std::function<void(const char *s, size_t n, any &dt)> enter;
+  std::function<void(const char *s, size_t n, size_t matchlen, any &value,
+                     any &dt)>
+      leave;
+  std::function<std::string()> error_message;
+  bool ignoreSemanticValue = false;
+  std::shared_ptr<Ope> whitespaceOpe;
+  std::shared_ptr<Ope> wordOpe;
+  bool enablePackratParsing = false;
+  bool is_macro = false;
+  std::vector<std::string> params;
+  TracerEnter tracer_enter;
+  TracerLeave tracer_leave;
+  bool disable_action = false;
 
 private:
-    friend class DefinitionReference;
+  friend class Reference;
+  friend class ParserGenerator;
 
-    Definition& operator=(const Definition& rhs);
-    Definition& operator=(Definition&& rhs);
+  Definition &operator=(const Definition &rhs);
+  Definition &operator=(Definition &&rhs);
 
-    Result parse_core(const char* s, size_t n, SemanticValues& sv, any& dt, const char* path) const {
-        AssignIDToDefinition assignId;
-        holder_->accept(assignId);
+  void initialize_definition_ids() const {
+    std::call_once(definition_ids_init_, [&]() {
+      AssignIDToDefinition vis;
+      holder_->accept(vis);
+      if (whitespaceOpe) { whitespaceOpe->accept(vis); }
+      if (wordOpe) { wordOpe->accept(vis); }
+      definition_ids_.swap(vis.ids);
+    });
+  }
 
-        std::shared_ptr<Ope> ope = holder_;
-        if (whitespaceOpe) {
-            ope = std::make_shared<Sequence>(whitespaceOpe, ope);
-        }
+  Result parse_core(const char *s, size_t n, SemanticValues &sv, any &dt,
+                    const char *path) const {
+    initialize_definition_ids();
 
-        Context cxt(path, s, n, assignId.ids.size(), whitespaceOpe, wordOpe, enablePackratParsing, tracer);
-        auto len = ope->parse(s, n, sv, cxt, dt);
-        return Result{ success(len), len, cxt.error_pos, cxt.message_pos, cxt.message };
-    }
+    std::shared_ptr<Ope> ope = holder_;
+    if (whitespaceOpe) { ope = std::make_shared<Sequence>(whitespaceOpe, ope); }
 
-    std::shared_ptr<Holder> holder_;
+    Context cxt(path, s, n, definition_ids_.size(), whitespaceOpe, wordOpe,
+                enablePackratParsing, tracer_enter, tracer_leave);
+
+    auto len = ope->parse(s, n, sv, cxt, dt);
+    return Result{success(len), len, cxt.error_pos, cxt.message_pos,
+                  cxt.message};
+  }
+
+  std::shared_ptr<Holder> holder_;
+  mutable std::once_flag is_token_init_;
+  mutable bool is_token_ = false;
+  mutable std::once_flag assign_id_to_definition_init_;
+  mutable std::once_flag definition_ids_init_;
+  mutable std::unordered_map<void *, size_t> definition_ids_;
 };
 
 /*
  * Implementations
  */
 
-inline size_t parse_literal(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt,
-        const std::string& lit, bool& init_is_word, bool& is_word)
-{
-    size_t i = 0;
-    for (; i < lit.size(); i++) {
-        if (i >= n || s[i] != lit[i]) {
-            c.set_error_pos(s);
-            return static_cast<size_t>(-1);
-        }
+inline size_t parse_literal(const char *s, size_t n, SemanticValues &sv,
+                            Context &c, any &dt, const std::string &lit,
+                            bool &init_is_word, bool &is_word,
+                            bool ignore_case) {
+  size_t i = 0;
+  for (; i < lit.size(); i++) {
+    if (i >= n || (ignore_case ? (std::tolower(s[i]) != std::tolower(lit[i]))
+                               : (s[i] != lit[i]))) {
+      c.set_error_pos(s);
+      return static_cast<size_t>(-1);
     }
+  }
 
-	// Word check
-    static Context dummy_c(nullptr, lit.data(), lit.size(), 0, nullptr, nullptr, false, nullptr);
-    static SemanticValues dummy_sv;
-    static any dummy_dt;
+  // Word check
+  static Context dummy_c(nullptr, c.s, c.l, 0, nullptr, nullptr, false, nullptr,
+                         nullptr);
+  static SemanticValues dummy_sv;
+  static any dummy_dt;
 
-    if (!init_is_word) { // TODO: Protect with mutex
-		if (c.wordOpe) {
-			auto len = c.wordOpe->parse(lit.data(), lit.size(), dummy_sv, dummy_c, dummy_dt);
-			is_word = success(len);
-		}
-        init_is_word = true;
+  if (!init_is_word) { // TODO: Protect with mutex
+    if (c.wordOpe) {
+      auto len =
+          c.wordOpe->parse(lit.data(), lit.size(), dummy_sv, dummy_c, dummy_dt);
+      is_word = success(len);
     }
+    init_is_word = true;
+  }
 
-	if (is_word) {
-        auto ope = std::make_shared<NotPredicate>(c.wordOpe);
-		auto len = ope->parse(s + i, n - i, dummy_sv, dummy_c, dummy_dt);
-		if (fail(len)) {
-            return static_cast<size_t>(-1);
-		}
-        i += len;
-	}
+  if (is_word) {
+    auto ope = std::make_shared<NotPredicate>(c.wordOpe);
+    auto len = ope->parse(s + i, n - i, dummy_sv, dummy_c, dummy_dt);
+    if (fail(len)) { return static_cast<size_t>(-1); }
+    i += len;
+  }
 
-    // Skip whiltespace
-    if (!c.in_token) {
-        if (c.whitespaceOpe) {
-            auto len = c.whitespaceOpe->parse(s + i, n - i, sv, c, dt);
-            if (fail(len)) {
-                return static_cast<size_t>(-1);
-            }
-            i += len;
-        }
+  // Skip whiltespace
+  if (!c.in_token) {
+    if (c.whitespaceOpe) {
+      auto len = c.whitespaceOpe->parse(s + i, n - i, sv, c, dt);
+      if (fail(len)) { return static_cast<size_t>(-1); }
+      i += len;
     }
+  }
 
-    return i;
+  return i;
 }
 
-inline size_t LiteralString::parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const {
-    c.trace("LiteralString", s, n, sv, dt);
-    return parse_literal(s, n, sv, c, dt, lit_, init_is_word_, is_word_);
+inline void Context::trace_enter(const char *name, const char *a_s, size_t n,
+                                 SemanticValues &sv, any &dt) const {
+  trace_ids.push_back(next_trace_id++);
+  tracer_enter(name, a_s, n, sv, *this, dt);
 }
 
-inline size_t TokenBoundary::parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const {
-	c.in_token = true;
-    auto se = make_scope_exit([&]() { c.in_token = false; });
-    const auto& rule = *ope_;
-    auto len = rule.parse(s, n, sv, c, dt);
-    if (success(len)) {
-        sv.tokens.push_back(std::make_pair(s, len));
+inline void Context::trace_leave(const char *name, const char *a_s, size_t n,
+                                 SemanticValues &sv, any &dt,
+                                 size_t len) const {
+  tracer_leave(name, a_s, n, sv, *this, dt, len);
+  trace_ids.pop_back();
+}
 
-        if (c.whitespaceOpe) {
-            auto l = c.whitespaceOpe->parse(s + len, n - len, sv, c, dt);
-            if (fail(l)) {
-                return static_cast<size_t>(-1);
-            }
-            len += l;
-        }
-    }
+inline bool Context::is_traceable(const Ope &ope) const {
+  if (tracer_enter && tracer_leave) {
+    IsReference vis;
+    const_cast<Ope &>(ope).accept(vis);
+    return !vis.is_reference;
+  }
+  return false;
+}
+
+inline size_t Ope::parse(const char *s, size_t n, SemanticValues &sv,
+                         Context &c, any &dt) const {
+  if (c.is_traceable(*this)) {
+    TraceOpeName vis;
+    const_cast<Ope &>(*this).accept(vis);
+    c.trace_enter(vis.name, s, n, sv, dt);
+    auto len = parse_core(s, n, sv, c, dt);
+    c.trace_leave(vis.name, s, n, sv, dt, len);
     return len;
+  }
+  return parse_core(s, n, sv, c, dt);
 }
 
-inline size_t Holder::parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const {
-    if (!ope_) {
-        throw std::logic_error("Uninitialized definition ope was used...");
+inline size_t Dictionary::parse_core(const char *s, size_t n,
+                                     SemanticValues & /*sv*/, Context &c,
+                                     any & /*dt*/) const {
+  auto len = trie_.match(s, n);
+  if (len > 0) { return len; }
+  c.set_error_pos(s);
+  return static_cast<size_t>(-1);
+}
+
+inline size_t LiteralString::parse_core(const char *s, size_t n,
+                                        SemanticValues &sv, Context &c,
+                                        any &dt) const {
+  return parse_literal(s, n, sv, c, dt, lit_, init_is_word_, is_word_,
+                       ignore_case_);
+}
+
+inline size_t TokenBoundary::parse_core(const char *s, size_t n,
+                                        SemanticValues &sv, Context &c,
+                                        any &dt) const {
+  c.in_token = true;
+  auto se = make_scope_exit([&]() { c.in_token = false; });
+  const auto &rule = *ope_;
+  auto len = rule.parse(s, n, sv, c, dt);
+  if (success(len)) {
+    sv.tokens.push_back(std::make_pair(s, len));
+
+    if (c.whitespaceOpe) {
+      auto l = c.whitespaceOpe->parse(s + len, n - len, sv, c, dt);
+      if (fail(l)) { return static_cast<size_t>(-1); }
+      len += l;
     }
+  }
+  return len;
+}
 
-    c.trace(outer_->name.c_str(), s, n, sv, dt);
-    c.nest_level++;
-    auto se = make_scope_exit([&]() { c.nest_level--; });
+inline size_t Holder::parse_core(const char *s, size_t n, SemanticValues &sv,
+                                 Context &c, any &dt) const {
+  if (!ope_) {
+    throw std::logic_error("Uninitialized definition ope was used...");
+  }
 
-    size_t      len;
-    any         val;
+  // Macro reference
+  // TODO: need packrat support
+  if (outer_->is_macro) { return ope_->parse(s, n, sv, c, dt); }
 
-    c.packrat(s, outer_->id, len, val, [&](any& a_val) {
-        auto& chldsv = c.push();
+  size_t len;
+  any val;
 
-        if (outer_->enter) {
-            outer_->enter(dt);
-        }
+  c.packrat(s, outer_->id, len, val, [&](any &a_val) {
+    if (outer_->enter) { outer_->enter(s, n, dt); }
 
-        auto se2 = make_scope_exit([&]() {
-            c.pop();
+    auto se2 = make_scope_exit([&]() {
+      c.pop();
 
-            if (outer_->leave) {
-                outer_->leave(dt);
-            }
-        });
-
-        const auto& rule = *ope_;
-        len = rule.parse(s, n, chldsv, c, dt);
-
-        // Invoke action
-        if (success(len)) {
-            chldsv.s_ = s;
-            chldsv.n_ = len;
-
-            try {
-                a_val = reduce(chldsv, dt);
-            } catch (const parse_error& e) {
-                if (e.what()) {
-                    if (c.message_pos < s) {
-                        c.message_pos = s;
-                        c.message = e.what();
-                    }
-                }
-                len = static_cast<size_t>(-1);
-            }
-        }
+      if (outer_->leave) { outer_->leave(s, n, len, a_val, dt); }
     });
 
+    auto &chldsv = c.push();
+
+    len = ope_->parse(s, n, chldsv, c, dt);
+
+    // Invoke action
     if (success(len)) {
-        if (!outer_->ignoreSemanticValue) {
-            sv.emplace_back(val);
+      chldsv.s_ = s;
+      chldsv.n_ = len;
+      chldsv.name_ = outer_->name;
+
+      if (!IsPrioritizedChoice::check(*ope_)) {
+        chldsv.choice_count_ = 0;
+        chldsv.choice_ = 0;
+      }
+
+      try {
+        a_val = reduce(chldsv, dt);
+      } catch (const parse_error &e) {
+        if (e.what()) {
+          if (c.message_pos < s) {
+            c.message_pos = s;
+            c.message = e.what();
+          }
         }
+        len = static_cast<size_t>(-1);
+      }
+    }
+  });
+
+  if (success(len)) {
+    if (!outer_->ignoreSemanticValue) {
+      sv.emplace_back(val);
+      sv.tags.emplace_back(str2tag(outer_->name.c_str()));
+    }
+  } else {
+    if (outer_->error_message) {
+      if (c.message_pos < s) {
+        c.message_pos = s;
+        c.message = outer_->error_message();
+      }
+    }
+  }
+
+  return len;
+}
+
+inline any Holder::reduce(SemanticValues &sv, any &dt) const {
+  if (outer_->action && !outer_->disable_action) {
+    return outer_->action(sv, dt);
+  } else if (sv.empty()) {
+    return any();
+  } else {
+    return std::move(sv.front());
+  }
+}
+
+inline const char *Holder::trace_name() const {
+  if (trace_name_.empty()) { trace_name_ = "[" + outer_->name + "]"; }
+  return trace_name_.c_str();
+}
+
+inline size_t Reference::parse_core(const char *s, size_t n, SemanticValues &sv,
+                                    Context &c, any &dt) const {
+  if (rule_) {
+    // Reference rule
+    if (rule_->is_macro) {
+      // Macro
+      FindReference vis(c.top_args(), rule_->params);
+
+      // Collect arguments
+      std::vector<std::shared_ptr<Ope>> args;
+      for (auto arg : args_) {
+        arg->accept(vis);
+        args.push_back(vis.found_ope);
+      }
+
+      c.push_args(std::move(args));
+      auto se = make_scope_exit([&]() { c.pop_args(); });
+      auto ope = get_core_operator();
+      return ope->parse(s, n, sv, c, dt);
     } else {
-        if (outer_->error_message) {
-            if (c.message_pos < s) {
-                c.message_pos = s;
-                c.message = outer_->error_message();
-            }
-        }
+      // Definition
+      auto ope = get_core_operator();
+      return ope->parse(s, n, sv, c, dt);
+    }
+  } else {
+    // Reference parameter in macro
+    const auto &args = c.top_args();
+    return args[iarg_]->parse(s, n, sv, c, dt);
+  }
+}
+
+inline std::shared_ptr<Ope> Reference::get_core_operator() const {
+  return rule_->holder_;
+}
+
+inline size_t BackReference::parse_core(const char *s, size_t n,
+                                        SemanticValues &sv, Context &c,
+                                        any &dt) const {
+  auto size = static_cast<int>(c.capture_scope_stack_size);
+  for (auto i = size - 1; i >= 0; i--) {
+    auto index = static_cast<size_t>(i);
+    const auto &cs = c.capture_scope_stack[index];
+    if (cs.find(name_) != cs.end()) {
+      const auto &lit = cs.at(name_);
+      auto init_is_word = false;
+      auto is_word = false;
+      return parse_literal(s, n, sv, c, dt, lit, init_is_word, is_word, false);
+    }
+  }
+  throw std::runtime_error("Invalid back reference...");
+}
+
+inline Definition &
+PrecedenceClimbing::get_reference_for_binop(Context &c) const {
+  if (rule_.is_macro) {
+    // Reference parameter in macro
+    const auto &args = c.top_args();
+    auto iarg = dynamic_cast<Reference &>(*binop_).iarg_;
+    auto arg = args[iarg];
+    return *dynamic_cast<Reference &>(*arg).rule_;
+  }
+
+  return *dynamic_cast<Reference &>(*binop_).rule_;
+}
+
+inline size_t PrecedenceClimbing::parse_expression(const char *s, size_t n,
+                                                   SemanticValues &sv,
+                                                   Context &c, any &dt,
+                                                   size_t min_prec) const {
+  auto len = atom_->parse(s, n, sv, c, dt);
+  if (fail(len)) { return len; }
+
+  std::string tok;
+  auto &rule = get_reference_for_binop(c);
+  auto action = rule.action;
+
+  rule.action = [&](SemanticValues &sv2, any &dt2) -> any {
+    tok = sv2.token();
+    if (action) {
+      return action(sv2, dt2);
+    } else if (!sv2.empty()) {
+      return sv2[0];
+    }
+    return any();
+  };
+  auto action_se = make_scope_exit([&]() { rule.action = action; });
+
+  auto save_error_pos = c.error_pos;
+
+  auto i = len;
+  while (i < n) {
+    std::vector<any> save_values(sv.begin(), sv.end());
+    auto save_tokens = sv.tokens;
+
+    auto chv = c.push();
+    auto chl = binop_->parse(s + i, n - i, chv, c, dt);
+    c.pop();
+
+    if (fail(chl)) {
+      c.error_pos = save_error_pos;
+      break;
     }
 
-    return len;
-}
+    auto it = info_.find(tok);
+    if (it == info_.end()) { break; }
 
-inline any Holder::reduce(const SemanticValues& sv, any& dt) const {
-    if (outer_->action) {
-        return outer_->action(sv, dt);
-    } else if (sv.empty()) {
-        return any();
-    } else {
-        return sv.front();
+    auto level = std::get<0>(it->second);
+    auto assoc = std::get<1>(it->second);
+
+    if (level < min_prec) { break; }
+
+    sv.emplace_back(std::move(chv[0]));
+    i += chl;
+
+    auto next_min_prec = level;
+    if (assoc == 'L') { next_min_prec = level + 1; }
+
+    chv = c.push();
+    chl = parse_expression(s + i, n - i, chv, c, dt, next_min_prec);
+    c.pop();
+
+    if (fail(chl)) {
+      sv.assign(save_values.begin(), save_values.end());
+      sv.tokens = save_tokens;
+      c.error_pos = save_error_pos;
+      break;
     }
-}
 
-inline size_t DefinitionReference::parse(
-    const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const {
-    const auto& rule = *get_rule();
-    return rule.parse(s, n, sv, c, dt);
-}
+    sv.emplace_back(std::move(chv[0]));
+    i += chl;
 
-inline std::shared_ptr<Ope> DefinitionReference::get_rule() const {
-    if (!rule_) {
-        std::call_once(init_, [this]() {
-            rule_ = grammar_.at(name_).holder_;
-        });
+    any val;
+    if (rule_.action) {
+      sv.s_ = s;
+      sv.n_ = i;
+      val = rule_.action(sv, dt);
+    } else if (!sv.empty()) {
+      val = sv[0];
     }
-    assert(rule_);
-    return rule_;
+    sv.clear();
+    sv.emplace_back(std::move(val));
+  }
+
+  return i;
 }
 
-inline size_t BackReference::parse(const char* s, size_t n, SemanticValues& sv, Context& c, any& dt) const {
-    c.trace("BackReference", s, n, sv, dt);
-    if (c.captures.find(name_) == c.captures.end()) {
-        throw std::runtime_error("Invalid back reference...");
+inline void Sequence::accept(Visitor &v) { v.visit(*this); }
+inline void PrioritizedChoice::accept(Visitor &v) { v.visit(*this); }
+inline void Repetition::accept(Visitor &v) { v.visit(*this); }
+inline void AndPredicate::accept(Visitor &v) { v.visit(*this); }
+inline void NotPredicate::accept(Visitor &v) { v.visit(*this); }
+inline void Dictionary::accept(Visitor &v) { v.visit(*this); }
+inline void LiteralString::accept(Visitor &v) { v.visit(*this); }
+inline void CharacterClass::accept(Visitor &v) { v.visit(*this); }
+inline void Character::accept(Visitor &v) { v.visit(*this); }
+inline void AnyCharacter::accept(Visitor &v) { v.visit(*this); }
+inline void CaptureScope::accept(Visitor &v) { v.visit(*this); }
+inline void Capture::accept(Visitor &v) { v.visit(*this); }
+inline void TokenBoundary::accept(Visitor &v) { v.visit(*this); }
+inline void Ignore::accept(Visitor &v) { v.visit(*this); }
+inline void User::accept(Visitor &v) { v.visit(*this); }
+inline void WeakHolder::accept(Visitor &v) { v.visit(*this); }
+inline void Holder::accept(Visitor &v) { v.visit(*this); }
+inline void Reference::accept(Visitor &v) { v.visit(*this); }
+inline void Whitespace::accept(Visitor &v) { v.visit(*this); }
+inline void BackReference::accept(Visitor &v) { v.visit(*this); }
+inline void PrecedenceClimbing::accept(Visitor &v) { v.visit(*this); }
+
+inline void AssignIDToDefinition::visit(Holder &ope) {
+  auto p = static_cast<void *>(ope.outer_);
+  if (ids.count(p)) { return; }
+  auto id = ids.size();
+  ids[p] = id;
+  ope.outer_->id = id;
+  ope.ope_->accept(*this);
+}
+
+inline void AssignIDToDefinition::visit(Reference &ope) {
+  if (ope.rule_) {
+    for (auto arg : ope.args_) {
+      arg->accept(*this);
     }
-    const auto& lit = c.captures[name_];
-    bool init_is_word = false;
-    bool is_word = false;
-    return parse_literal(s, n, sv, c, dt, lit, init_is_word, is_word);
+    ope.rule_->accept(*this);
+  }
 }
 
-inline void Sequence::accept(Visitor& v) { v.visit(*this); }
-inline void PrioritizedChoice::accept(Visitor& v) { v.visit(*this); }
-inline void ZeroOrMore::accept(Visitor& v) { v.visit(*this); }
-inline void OneOrMore::accept(Visitor& v) { v.visit(*this); }
-inline void Option::accept(Visitor& v) { v.visit(*this); }
-inline void AndPredicate::accept(Visitor& v) { v.visit(*this); }
-inline void NotPredicate::accept(Visitor& v) { v.visit(*this); }
-inline void LiteralString::accept(Visitor& v) { v.visit(*this); }
-inline void CharacterClass::accept(Visitor& v) { v.visit(*this); }
-inline void Character::accept(Visitor& v) { v.visit(*this); }
-inline void AnyCharacter::accept(Visitor& v) { v.visit(*this); }
-inline void Capture::accept(Visitor& v) { v.visit(*this); }
-inline void TokenBoundary::accept(Visitor& v) { v.visit(*this); }
-inline void Ignore::accept(Visitor& v) { v.visit(*this); }
-inline void WeakHolder::accept(Visitor& v) { v.visit(*this); }
-inline void Holder::accept(Visitor& v) { v.visit(*this); }
-inline void DefinitionReference::accept(Visitor& v) { v.visit(*this); }
-inline void Whitespace::accept(Visitor& v) { v.visit(*this); }
-inline void BackReference::accept(Visitor& v) { v.visit(*this); }
-
-inline void AssignIDToDefinition::visit(Holder& ope) {
-    auto p = static_cast<void*>(ope.outer_);
-    if (ids.count(p)) {
-        return;
+inline void TokenChecker::visit(Reference &ope) {
+  if (ope.is_macro_) {
+    ope.rule_->accept(*this);
+    for (auto arg : ope.args_) {
+      arg->accept(*this);
     }
-    auto id = ids.size();
-    ids[p] = id;
-    ope.outer_->id = id;
-    ope.ope_->accept(*this);
+  } else {
+    has_rule_ = true;
+  }
 }
 
-/*
- * Factories
- */
-template <typename... Args>
-std::shared_ptr<Ope> seq(Args&& ...args) {
-    return std::make_shared<Sequence>(static_cast<std::shared_ptr<Ope>>(args)...);
+inline void DetectLeftRecursion::visit(Reference &ope) {
+  if (ope.name_ == name_) {
+    error_s = ope.s_;
+  } else if (!refs_.count(ope.name_)) {
+    refs_.insert(ope.name_);
+    if (ope.rule_) {
+      ope.rule_->accept(*this);
+      if (done_ == false) { return; }
+    }
+  }
+  done_ = true;
 }
 
-template <typename... Args>
-std::shared_ptr<Ope> cho(Args&& ...args) {
-    return std::make_shared<PrioritizedChoice>(static_cast<std::shared_ptr<Ope>>(args)...);
+inline void HasEmptyElement::visit(Reference &ope) {
+  auto it = std::find_if(refs_.begin(), refs_.end(),
+                         [&](const std::pair<const char *, std::string> &ref) {
+                           return ope.name_ == ref.second;
+                         });
+  if (it != refs_.end()) { return; }
+
+  if (ope.rule_) {
+    refs_.emplace_back(ope.s_, ope.name_);
+    ope.rule_->accept(*this);
+    refs_.pop_back();
+  }
 }
 
-inline std::shared_ptr<Ope> zom(const std::shared_ptr<Ope>& ope) {
-    return std::make_shared<ZeroOrMore>(ope);
+inline void DetectInfiniteLoop::visit(Reference &ope) {
+  auto it = std::find_if(refs_.begin(), refs_.end(),
+                         [&](const std::pair<const char *, std::string> &ref) {
+                           return ope.name_ == ref.second;
+                         });
+  if (it != refs_.end()) { return; }
+
+  if (ope.rule_) {
+    refs_.emplace_back(ope.s_, ope.name_);
+    ope.rule_->accept(*this);
+    refs_.pop_back();
+  }
 }
 
-inline std::shared_ptr<Ope> oom(const std::shared_ptr<Ope>& ope) {
-    return std::make_shared<OneOrMore>(ope);
+inline void ReferenceChecker::visit(Reference &ope) {
+  auto it = std::find(params_.begin(), params_.end(), ope.name_);
+  if (it != params_.end()) { return; }
+
+  if (!grammar_.count(ope.name_)) {
+    error_s[ope.name_] = ope.s_;
+    error_message[ope.name_] = "'" + ope.name_ + "' is not defined.";
+  } else {
+    const auto &rule = grammar_.at(ope.name_);
+    if (rule.is_macro) {
+      if (!ope.is_macro_ || ope.args_.size() != rule.params.size()) {
+        error_s[ope.name_] = ope.s_;
+        error_message[ope.name_] = "incorrect number of arguments.";
+      }
+    } else if (ope.is_macro_) {
+      error_s[ope.name_] = ope.s_;
+      error_message[ope.name_] = "'" + ope.name_ + "' is not macro.";
+    }
+  }
 }
 
-inline std::shared_ptr<Ope> opt(const std::shared_ptr<Ope>& ope) {
-    return std::make_shared<Option>(ope);
+inline void LinkReferences::visit(Reference &ope) {
+  // Check if the reference is a macro parameter
+  auto found_param = false;
+  for (size_t i = 0; i < params_.size(); i++) {
+    const auto &param = params_[i];
+    if (param == ope.name_) {
+      ope.iarg_ = i;
+      found_param = true;
+      break;
+    }
+  }
+
+  // Check if the reference is a definition rule
+  if (!found_param && grammar_.count(ope.name_)) {
+    auto &rule = grammar_.at(ope.name_);
+    ope.rule_ = &rule;
+  }
+
+  for (auto arg : ope.args_) {
+    arg->accept(*this);
+  }
 }
 
-inline std::shared_ptr<Ope> apd(const std::shared_ptr<Ope>& ope) {
-    return std::make_shared<AndPredicate>(ope);
-}
-
-inline std::shared_ptr<Ope> npd(const std::shared_ptr<Ope>& ope) {
-    return std::make_shared<NotPredicate>(ope);
-}
-
-inline std::shared_ptr<Ope> lit(const std::string& lit) {
-    return std::make_shared<LiteralString>(lit);
-}
-
-inline std::shared_ptr<Ope> cls(const std::string& chars) {
-    return std::make_shared<CharacterClass>(chars);
-}
-
-inline std::shared_ptr<Ope> chr(char dt) {
-    return std::make_shared<Character>(dt);
-}
-
-inline std::shared_ptr<Ope> dot() {
-    return std::make_shared<AnyCharacter>();
-}
-
-inline std::shared_ptr<Ope> cap(const std::shared_ptr<Ope>& ope, Capture::MatchAction ma) {
-    return std::make_shared<Capture>(ope, ma);
-}
-
-inline std::shared_ptr<Ope> tok(const std::shared_ptr<Ope>& ope) {
-    return std::make_shared<TokenBoundary>(ope);
-}
-
-inline std::shared_ptr<Ope> ign(const std::shared_ptr<Ope>& ope) {
-    return std::make_shared<Ignore>(ope);
-}
-
-inline std::shared_ptr<Ope> ref(const std::unordered_map<std::string, Definition>& grammar, const std::string& name, const char* s) {
-    return std::make_shared<DefinitionReference>(grammar, name, s);
-}
-
-inline std::shared_ptr<Ope> wsp(const std::shared_ptr<Ope>& ope) {
-    return std::make_shared<Whitespace>(std::make_shared<Ignore>(ope));
-}
-
-inline std::shared_ptr<Ope> bkr(const std::string& name) {
-    return std::make_shared<BackReference>(name);
+inline void FindReference::visit(Reference &ope) {
+  for (size_t i = 0; i < args_.size(); i++) {
+    const auto &name = params_[i];
+    if (name == ope.name_) {
+      found_ope = args_[i];
+      return;
+    }
+  }
+  found_ope = ope.shared_from_this();
 }
 
 /*-----------------------------------------------------------------------------
  *  PEG parser generator
  *---------------------------------------------------------------------------*/
 
-typedef std::unordered_map<std::string, Definition> Grammar;
-typedef std::function<void (size_t, size_t, const std::string&)> Log;
+typedef std::unordered_map<std::string, std::shared_ptr<Ope>> Rules;
+typedef std::function<void(size_t, size_t, const std::string &)> Log;
 
-class ParserGenerator
-{
+class ParserGenerator {
 public:
-    static std::shared_ptr<Grammar> parse(
-        const char*  s,
-        size_t       n,
-        std::string& start,
-        Log          log)
-    {
-        return get_instance().perform_core(s, n, start, log);
-    }
+  static std::shared_ptr<Grammar> parse(const char *s, size_t n,
+                                        const Rules &rules, std::string &start,
+                                        Log log) {
+    return get_instance().perform_core(s, n, rules, start, log);
+  }
 
-    // For debuging purpose
-    static Grammar& grammar() {
-        return get_instance().g;
-    }
+  static std::shared_ptr<Grammar> parse(const char *s, size_t n,
+                                        std::string &start, Log log) {
+    Rules dummy;
+    return parse(s, n, dummy, start, log);
+  }
+
+  // For debuging purpose
+  static Grammar &grammar() { return get_instance().g; }
 
 private:
-    static ParserGenerator& get_instance() {
-        static ParserGenerator instance;
-        return instance;
+  static ParserGenerator &get_instance() {
+    static ParserGenerator instance;
+    return instance;
+  }
+
+  ParserGenerator() {
+    make_grammar();
+    setup_actions();
+  }
+
+  struct Instruction {
+    std::string type;
+    any data;
+  };
+
+  struct Data {
+    std::shared_ptr<Grammar> grammar;
+    std::string start;
+    const char *start_pos = nullptr;
+    std::vector<std::pair<std::string, const char *>> duplicates;
+    std::map<std::string, Instruction> instructions;
+
+    Data() : grammar(std::make_shared<Grammar>()) {}
+  };
+
+  void make_grammar() {
+    // Setup PEG syntax parser
+    g["Grammar"] <= seq(g["Spacing"], oom(g["Definition"]), g["EndOfFile"]);
+    g["Definition"] <=
+        cho(seq(g["Ignore"], g["IdentCont"], g["Parameters"], g["LEFTARROW"],
+                g["Expression"], opt(g["Instruction"])),
+            seq(g["Ignore"], g["Identifier"], g["LEFTARROW"], g["Expression"],
+                opt(g["Instruction"])));
+    g["Expression"] <= seq(g["Sequence"], zom(seq(g["SLASH"], g["Sequence"])));
+    g["Sequence"] <= zom(g["Prefix"]);
+    g["Prefix"] <= seq(opt(cho(g["AND"], g["NOT"])), g["Suffix"]);
+    g["Suffix"] <= seq(g["Primary"], opt(g["Loop"]));
+    g["Loop"] <= cho(g["QUESTION"], g["STAR"], g["PLUS"], g["Repetition"]);
+    g["Primary"] <=
+        cho(seq(g["Ignore"], g["IdentCont"], g["Arguments"],
+                npd(g["LEFTARROW"])),
+            seq(g["Ignore"], g["Identifier"],
+                npd(seq(opt(g["Parameters"]), g["LEFTARROW"]))),
+            seq(g["OPEN"], g["Expression"], g["CLOSE"]),
+            seq(g["BeginTok"], g["Expression"], g["EndTok"]),
+            seq(g["BeginCapScope"], g["Expression"], g["EndCapScope"]),
+            seq(g["BeginCap"], g["Expression"], g["EndCap"]), g["BackRef"],
+            g["LiteralI"], g["Dictionary"], g["Literal"], g["NegatedClass"],
+            g["Class"], g["DOT"]);
+
+    g["Identifier"] <= seq(g["IdentCont"], g["Spacing"]);
+    g["IdentCont"] <= seq(g["IdentStart"], zom(g["IdentRest"]));
+
+    const static std::vector<std::pair<char32_t, char32_t>> range = {
+        {0x0080, 0xFFFF}};
+    g["IdentStart"] <= cho(cls("a-zA-Z_%"), cls(range));
+
+    g["IdentRest"] <= cho(g["IdentStart"], cls("0-9"));
+
+    g["Dictionary"] <= seq(g["LiteralD"], oom(seq(g["PIPE"], g["LiteralD"])));
+
+    auto lit_ope = cho(seq(cls("'"), tok(zom(seq(npd(cls("'")), g["Char"]))),
+                           cls("'"), g["Spacing"]),
+                       seq(cls("\""), tok(zom(seq(npd(cls("\"")), g["Char"]))),
+                           cls("\""), g["Spacing"]));
+    g["Literal"] <= lit_ope;
+    g["LiteralD"] <= lit_ope;
+
+    g["LiteralI"] <=
+        cho(seq(cls("'"), tok(zom(seq(npd(cls("'")), g["Char"]))), lit("'i"),
+                g["Spacing"]),
+            seq(cls("\""), tok(zom(seq(npd(cls("\"")), g["Char"]))), lit("\"i"),
+                g["Spacing"]));
+
+    // NOTE: The original Brian Ford's paper uses 'zom' instead of 'oom'.
+    g["Class"] <= seq(chr('['), npd(chr('^')),
+                      tok(oom(seq(npd(chr(']')), g["Range"]))), chr(']'),
+                      g["Spacing"]);
+    g["NegatedClass"] <= seq(lit("[^"),
+                             tok(oom(seq(npd(chr(']')), g["Range"]))), chr(']'),
+                             g["Spacing"]);
+
+    g["Range"] <= cho(seq(g["Char"], chr('-'), g["Char"]), g["Char"]);
+    g["Char"] <= cho(seq(chr('\\'), cls("nrt'\"[]\\^")),
+                     seq(chr('\\'), cls("0-3"), cls("0-7"), cls("0-7")),
+                     seq(chr('\\'), cls("0-7"), opt(cls("0-7"))),
+                     seq(lit("\\x"), cls("0-9a-fA-F"), opt(cls("0-9a-fA-F"))),
+                     seq(lit("\\u"), cls("0-9a-fA-F"), cls("0-9a-fA-F"),
+                         cls("0-9a-fA-F"), cls("0-9a-fA-F")),
+                     seq(npd(chr('\\')), dot()));
+
+    g["Repetition"] <=
+        seq(g["BeginBlacket"], g["RepetitionRange"], g["EndBlacket"]);
+    g["RepetitionRange"] <= cho(seq(g["Number"], g["COMMA"], g["Number"]),
+                                seq(g["Number"], g["COMMA"]), g["Number"],
+                                seq(g["COMMA"], g["Number"]));
+    g["Number"] <= seq(oom(cls("0-9")), g["Spacing"]);
+
+    g["LEFTARROW"] <=
+        seq(cho(lit("<-"), lit(reinterpret_cast<const char *>(u8"←"))),
+            g["Spacing"]);
+    ~g["SLASH"] <= seq(chr('/'), g["Spacing"]);
+    ~g["PIPE"] <= seq(chr('|'), g["Spacing"]);
+    g["AND"] <= seq(chr('&'), g["Spacing"]);
+    g["NOT"] <= seq(chr('!'), g["Spacing"]);
+    g["QUESTION"] <= seq(chr('?'), g["Spacing"]);
+    g["STAR"] <= seq(chr('*'), g["Spacing"]);
+    g["PLUS"] <= seq(chr('+'), g["Spacing"]);
+    ~g["OPEN"] <= seq(chr('('), g["Spacing"]);
+    ~g["CLOSE"] <= seq(chr(')'), g["Spacing"]);
+    g["DOT"] <= seq(chr('.'), g["Spacing"]);
+
+    ~g["Spacing"] <= zom(cho(g["Space"], g["Comment"]));
+    g["Comment"] <=
+        seq(chr('#'), zom(seq(npd(g["EndOfLine"]), dot())), g["EndOfLine"]);
+    g["Space"] <= cho(chr(' '), chr('\t'), g["EndOfLine"]);
+    g["EndOfLine"] <= cho(lit("\r\n"), chr('\n'), chr('\r'));
+    g["EndOfFile"] <= npd(dot());
+
+    ~g["BeginTok"] <= seq(chr('<'), g["Spacing"]);
+    ~g["EndTok"] <= seq(chr('>'), g["Spacing"]);
+
+    ~g["BeginCapScope"] <= seq(chr('$'), chr('('), g["Spacing"]);
+    ~g["EndCapScope"] <= seq(chr(')'), g["Spacing"]);
+
+    g["BeginCap"] <= seq(chr('$'), tok(g["IdentCont"]), chr('<'), g["Spacing"]);
+    ~g["EndCap"] <= seq(chr('>'), g["Spacing"]);
+
+    g["BackRef"] <= seq(chr('$'), tok(g["IdentCont"]), g["Spacing"]);
+
+    g["IGNORE"] <= chr('~');
+
+    g["Ignore"] <= opt(g["IGNORE"]);
+    g["Parameters"] <= seq(g["OPEN"], g["Identifier"],
+                           zom(seq(g["COMMA"], g["Identifier"])), g["CLOSE"]);
+    g["Arguments"] <= seq(g["OPEN"], g["Expression"],
+                          zom(seq(g["COMMA"], g["Expression"])), g["CLOSE"]);
+    ~g["COMMA"] <= seq(chr(','), g["Spacing"]);
+
+    // Instruction grammars
+    g["Instruction"] <=
+        seq(g["BeginBlacket"], cho(g["PrecedenceClimbing"]), g["EndBlacket"]);
+
+    ~g["SpacesZom"] <= zom(g["Space"]);
+    ~g["SpacesOom"] <= oom(g["Space"]);
+    ~g["BeginBlacket"] <= seq(chr('{'), g["Spacing"]);
+    ~g["EndBlacket"] <= seq(chr('}'), g["Spacing"]);
+
+    // PrecedenceClimbing instruction
+    g["PrecedenceClimbing"] <=
+        seq(lit("precedence"), g["SpacesZom"], g["PrecedenceInfo"],
+            zom(seq(g["SpacesOom"], g["PrecedenceInfo"])), g["SpacesZom"]);
+    g["PrecedenceInfo"] <=
+        seq(g["PrecedenceAssoc"],
+            oom(seq(ign(g["SpacesOom"]), g["PrecedenceOpe"])));
+    g["PrecedenceOpe"] <=
+        tok(oom(
+            seq(npd(cho(g["PrecedenceAssoc"], g["Space"], chr('}'))), dot())));
+    g["PrecedenceAssoc"] <= cls("LR");
+
+    // Set definition names
+    for (auto &x : g) {
+      x.second.name = x.first;
     }
+  }
 
-    ParserGenerator() {
-        make_grammar();
-        setup_actions();
-    }
+  void setup_actions() {
+    g["Definition"] = [&](const SemanticValues &sv, any &dt) {
+      Data &data = *any_cast<Data *>(dt);
 
-    struct Data {
-        std::shared_ptr<Grammar>                         grammar;
-        std::string                                      start;
-        std::vector<std::pair<std::string, const char*>> duplicates;
-        std::unordered_map<std::string, const char*>     references;
+      auto is_macro = sv.choice() == 0;
+      auto ignore = any_cast<bool>(sv[0]);
+      auto name = any_cast<std::string>(sv[1]);
 
-        Data(): grammar(std::make_shared<Grammar>()) {}
+      std::vector<std::string> params;
+      std::shared_ptr<Ope> ope;
+      if (is_macro) {
+        params = any_cast<std::vector<std::string>>(sv[2]);
+        ope = any_cast<std::shared_ptr<Ope>>(sv[4]);
+        if (sv.size() == 6) {
+          data.instructions[name] = any_cast<Instruction>(sv[5]);
+        }
+      } else {
+        ope = any_cast<std::shared_ptr<Ope>>(sv[3]);
+        if (sv.size() == 5) {
+          data.instructions[name] = any_cast<Instruction>(sv[4]);
+        }
+      }
+
+      auto &grammar = *data.grammar;
+      if (!grammar.count(name)) {
+        auto &rule = grammar[name];
+        rule <= ope;
+        rule.name = name;
+        rule.s_ = sv.c_str();
+        rule.ignoreSemanticValue = ignore;
+        rule.is_macro = is_macro;
+        rule.params = params;
+
+        if (data.start.empty()) {
+          data.start = name;
+          data.start_pos = sv.c_str();
+        }
+      } else {
+        data.duplicates.emplace_back(name, sv.c_str());
+      }
     };
 
-    struct DetectLeftRecursion : public Ope::Visitor {
-        DetectLeftRecursion(const std::string& name)
-            : s_(nullptr), name_(name), done_(false) {}
-
-        using Ope::Visitor::visit;
-
-        void visit(Sequence& ope) override {
-            for (auto op: ope.opes_) {
-                op->accept(*this);
-                if (done_) {
-                    break;
-                } else if (s_) {
-                    done_ = true;
-                    break;
-                }
-            }
+    g["Expression"] = [&](const SemanticValues &sv) {
+      if (sv.size() == 1) {
+        return any_cast<std::shared_ptr<Ope>>(sv[0]);
+      } else {
+        std::vector<std::shared_ptr<Ope>> opes;
+        for (auto i = 0u; i < sv.size(); i++) {
+          opes.emplace_back(any_cast<std::shared_ptr<Ope>>(sv[i]));
         }
-        void visit(PrioritizedChoice& ope) override {
-            for (auto op: ope.opes_) {
-                op->accept(*this);
-                if (s_) {
-                    done_ = true;
-                    break;
-                }
-            }
-        }
-        void visit(ZeroOrMore& ope) override {
-            ope.ope_->accept(*this);
-            done_ = false;
-        }
-        void visit(OneOrMore& ope) override {
-            ope.ope_->accept(*this);
-            done_ = true;
-        }
-        void visit(Option& ope) override {
-            ope.ope_->accept(*this);
-            done_ = false;
-        }
-        void visit(AndPredicate& ope) override {
-            ope.ope_->accept(*this);
-            done_ = false;
-        }
-        void visit(NotPredicate& ope) override {
-            ope.ope_->accept(*this);
-            done_ = false;
-        }
-        void visit(LiteralString& ope) override {
-            done_ = !ope.lit_.empty();
-        }
-        void visit(CharacterClass& /*ope*/) override {
-            done_ = true;
-        }
-        void visit(Character& /*ope*/) override {
-            done_ = true;
-        }
-        void visit(AnyCharacter& /*ope*/) override {
-            done_ = true;
-        }
-        void visit(Capture& ope) override {
-            ope.ope_->accept(*this);
-        }
-        void visit(TokenBoundary& ope) override {
-            ope.ope_->accept(*this);
-        }
-        void visit(Ignore& ope) override {
-            ope.ope_->accept(*this);
-        }
-        void visit(WeakHolder& ope) override {
-            ope.weak_.lock()->accept(*this);
-        }
-        void visit(Holder& ope) override {
-            ope.ope_->accept(*this);
-        }
-        void visit(DefinitionReference& ope) override {
-            if (ope.name_ == name_) {
-                s_ = ope.s_;
-            } else if (refs_.count(ope.name_)) {
-                ;
-            } else {
-                refs_.insert(ope.name_);
-                ope.get_rule()->accept(*this);
-            }
-            done_ = true;
-        }
-        void visit(BackReference& /*ope*/) override {
-            done_ = true;
-        }
-
-        const char* s_;
-
-    private:
-        std::string           name_;
-        std::set<std::string> refs_;
-        bool                  done_;
+        const std::shared_ptr<Ope> ope =
+            std::make_shared<PrioritizedChoice>(opes);
+        return ope;
+      }
     };
 
-    void make_grammar() {
-        // Setup PEG syntax parser
-        g["Grammar"]    <= seq(g["Spacing"], oom(g["Definition"]), g["EndOfFile"]);
-        g["Definition"] <= seq(opt(g["IGNORE"]), g["Identifier"], g["LEFTARROW"], g["Expression"]);
-
-        g["Expression"] <= seq(g["Sequence"], zom(seq(g["SLASH"], g["Sequence"])));
-        g["Sequence"]   <= zom(g["Prefix"]);
-        g["Prefix"]     <= seq(opt(cho(g["AND"], g["NOT"])), g["Suffix"]);
-        g["Suffix"]     <= seq(g["Primary"], opt(cho(g["QUESTION"], g["STAR"], g["PLUS"])));
-        g["Primary"]    <= cho(seq(opt(g["IGNORE"]), g["Identifier"], npd(g["LEFTARROW"])),
-                               seq(g["OPEN"], g["Expression"], g["CLOSE"]),
-                               seq(g["BeginTok"], g["Expression"], g["EndTok"]),
-                               seq(g["BeginCap"], g["Expression"], g["EndCap"]),
-                               g["BackRef"], g["Literal"], g["Class"], g["DOT"]);
-
-        g["Identifier"] <= seq(g["IdentCont"], g["Spacing"]);
-        g["IdentCont"]  <= seq(g["IdentStart"], zom(g["IdentRest"]));
-        g["IdentStart"] <= cls("a-zA-Z_\x80-\xff%");
-        g["IdentRest"]  <= cho(g["IdentStart"], cls("0-9"));
-
-        g["Literal"]    <= cho(seq(cls("'"), tok(zom(seq(npd(cls("'")), g["Char"]))), cls("'"), g["Spacing"]),
-                               seq(cls("\""), tok(zom(seq(npd(cls("\"")), g["Char"]))), cls("\""), g["Spacing"]));
-
-        g["Class"]      <= seq(chr('['), tok(zom(seq(npd(chr(']')), g["Range"]))), chr(']'), g["Spacing"]);
-
-        g["Range"]      <= cho(seq(g["Char"], chr('-'), g["Char"]), g["Char"]);
-        g["Char"]       <= cho(seq(chr('\\'), cls("nrt'\"[]\\")),
-                               seq(chr('\\'), cls("0-3"), cls("0-7"), cls("0-7")),
-                               seq(chr('\\'), cls("0-7"), opt(cls("0-7"))),
-                               seq(lit("\\x"), cls("0-9a-fA-F"), opt(cls("0-9a-fA-F"))),
-                               seq(npd(chr('\\')), dot()));
-
-#if !defined(PEGLIB_NO_UNICODE_CHARS)
-        g["LEFTARROW"]  <= seq(cho(lit("<-"), lit(u8"←")), g["Spacing"]);
-#else
-        g["LEFTARROW"]  <= seq(lit("<-"), g["Spacing"]);
-#endif
-        ~g["SLASH"]     <= seq(chr('/'), g["Spacing"]);
-        g["AND"]        <= seq(chr('&'), g["Spacing"]);
-        g["NOT"]        <= seq(chr('!'), g["Spacing"]);
-        g["QUESTION"]   <= seq(chr('?'), g["Spacing"]);
-        g["STAR"]       <= seq(chr('*'), g["Spacing"]);
-        g["PLUS"]       <= seq(chr('+'), g["Spacing"]);
-        g["OPEN"]       <= seq(chr('('), g["Spacing"]);
-        g["CLOSE"]      <= seq(chr(')'), g["Spacing"]);
-        g["DOT"]        <= seq(chr('.'), g["Spacing"]);
-
-        g["Spacing"]    <= zom(cho(g["Space"], g["Comment"]));
-        g["Comment"]    <= seq(chr('#'), zom(seq(npd(g["EndOfLine"]), dot())), g["EndOfLine"]);
-        g["Space"]      <= cho(chr(' '), chr('\t'), g["EndOfLine"]);
-        g["EndOfLine"]  <= cho(lit("\r\n"), chr('\n'), chr('\r'));
-        g["EndOfFile"]  <= npd(dot());
-
-        g["BeginTok"]   <= seq(chr('<'), g["Spacing"]);
-        g["EndTok"]     <= seq(chr('>'), g["Spacing"]);
-
-        g["BeginCap"]   <= seq(chr('$'), tok(g["IdentCont"]), chr('<'), g["Spacing"]);
-        g["EndCap"]     <= seq(chr('>'), g["Spacing"]);
-
-        g["BackRef"]    <= seq(chr('$'), tok(g["IdentCont"]), g["Spacing"]);
-
-        g["IGNORE"]     <= chr('~');
-
-        // Set definition names
-        for (auto& x: g) {
-            x.second.name = x.first;
+    g["Sequence"] = [&](const SemanticValues &sv) {
+      if (sv.size() == 1) {
+        return any_cast<std::shared_ptr<Ope>>(sv[0]);
+      } else {
+        std::vector<std::shared_ptr<Ope>> opes;
+        for (const auto &x : sv) {
+          opes.emplace_back(any_cast<std::shared_ptr<Ope>>(x));
         }
+        const std::shared_ptr<Ope> ope = std::make_shared<Sequence>(opes);
+        return ope;
+      }
+    };
+
+    g["Prefix"] = [&](const SemanticValues &sv) {
+      std::shared_ptr<Ope> ope;
+      if (sv.size() == 1) {
+        ope = any_cast<std::shared_ptr<Ope>>(sv[0]);
+      } else {
+        assert(sv.size() == 2);
+        auto tok = any_cast<char>(sv[0]);
+        ope = any_cast<std::shared_ptr<Ope>>(sv[1]);
+        if (tok == '&') {
+          ope = apd(ope);
+        } else { // '!'
+          ope = npd(ope);
+        }
+      }
+      return ope;
+    };
+
+    struct Loop {
+      enum class Type { opt = 0, zom, oom, rep };
+      Type type;
+      std::pair<size_t, size_t> range;
+    };
+
+    g["Suffix"] = [&](const SemanticValues &sv) {
+      auto ope = any_cast<std::shared_ptr<Ope>>(sv[0]);
+      if (sv.size() == 1) {
+        return ope;
+      } else {
+        assert(sv.size() == 2);
+        auto loop = any_cast<Loop>(sv[1]);
+        switch (loop.type) {
+        case Loop::Type::opt: return opt(ope);
+        case Loop::Type::zom: return zom(ope);
+        case Loop::Type::oom: return oom(ope);
+        case Loop::Type::rep: // Regex-like repetition
+          return rep(ope, loop.range.first, loop.range.second);
+        }
+      }
+    };
+
+    g["Loop"] = [&](const SemanticValues &sv) {
+      switch (sv.choice()) {
+      case 0: // Option
+        return Loop{Loop::Type::opt, std::pair<size_t, size_t>()};
+      case 1: // Zero or More
+        return Loop{Loop::Type::zom, std::pair<size_t, size_t>()};
+      case 2: // One or More
+        return Loop{Loop::Type::oom, std::pair<size_t, size_t>()};
+      default: // Regex-like repetition
+        return Loop{Loop::Type::rep,
+                    any_cast<std::pair<size_t, size_t>>(sv[0])};
+      }
+    };
+
+    g["RepetitionRange"] = [&](const SemanticValues &sv) {
+      switch (sv.choice()) {
+      case 0: { // Number COMMA Number
+        auto min = any_cast<size_t>(sv[0]);
+        auto max = any_cast<size_t>(sv[1]);
+        return std::make_pair(min, max);
+      }
+      case 1: // Number COMMA
+        return std::make_pair(any_cast<size_t>(sv[0]),
+                              std::numeric_limits<size_t>::max());
+      case 2: { // Number
+        auto n = any_cast<size_t>(sv[0]);
+        return std::make_pair(n, n);
+      }
+      default: // COMMA Number
+        return std::make_pair(std::numeric_limits<size_t>::min(),
+                              any_cast<size_t>(sv[0]));
+      }
+    };
+    g["Number"] = [&](const SemanticValues &sv) {
+      std::stringstream ss(sv.str());
+      size_t n;
+      ss >> n;
+      return n;
+    };
+
+    g["Primary"] = [&](const SemanticValues &sv, any &dt) {
+      Data &data = *any_cast<Data *>(dt);
+
+      switch (sv.choice()) {
+      case 0:   // Macro Reference
+      case 1: { // Reference
+        auto is_macro = sv.choice() == 0;
+        auto ignore = any_cast<bool>(sv[0]);
+        const auto &ident = any_cast<std::string>(sv[1]);
+
+        std::vector<std::shared_ptr<Ope>> args;
+        if (is_macro) {
+          args = any_cast<std::vector<std::shared_ptr<Ope>>>(sv[2]);
+        }
+
+        std::shared_ptr<Ope> ope =
+            ref(*data.grammar, ident, sv.c_str(), is_macro, args);
+
+        if (ignore) {
+          return ign(ope);
+        } else {
+          return ope;
+        }
+      }
+      case 2: { // (Expression)
+        return any_cast<std::shared_ptr<Ope>>(sv[0]);
+      }
+      case 3: { // TokenBoundary
+        return tok(any_cast<std::shared_ptr<Ope>>(sv[0]));
+      }
+      case 4: { // CaptureScope
+        return csc(any_cast<std::shared_ptr<Ope>>(sv[0]));
+      }
+      case 5: { // Capture
+        const auto &name = any_cast<std::string>(sv[0]);
+        auto ope = any_cast<std::shared_ptr<Ope>>(sv[1]);
+        return cap(ope, [name](const char *a_s, size_t a_n, Context &c) {
+          auto &cs = c.capture_scope_stack[c.capture_scope_stack_size - 1];
+          cs[name] = std::string(a_s, a_n);
+        });
+      }
+      default: {
+        return any_cast<std::shared_ptr<Ope>>(sv[0]);
+      }
+      }
+    };
+
+    g["IdentCont"] = [](const SemanticValues &sv) {
+      return std::string(sv.c_str(), sv.length());
+    };
+
+    g["Dictionary"] = [](const SemanticValues &sv) {
+      auto items = sv.transform<std::string>();
+      return dic(items);
+    };
+
+    g["Literal"] = [](const SemanticValues &sv) {
+      const auto &tok = sv.tokens.front();
+      return lit(resolve_escape_sequence(tok.first, tok.second));
+    };
+    g["LiteralI"] = [](const SemanticValues &sv) {
+      const auto &tok = sv.tokens.front();
+      return liti(resolve_escape_sequence(tok.first, tok.second));
+    };
+    g["LiteralD"] = [](const SemanticValues &sv) {
+      auto &tok = sv.tokens.front();
+      return resolve_escape_sequence(tok.first, tok.second);
+    };
+
+    g["Class"] = [](const SemanticValues &sv) {
+      auto ranges = sv.transform<std::pair<char32_t, char32_t>>();
+      return cls(ranges);
+    };
+    g["NegatedClass"] = [](const SemanticValues &sv) {
+      auto ranges = sv.transform<std::pair<char32_t, char32_t>>();
+      return ncls(ranges);
+    };
+    g["Range"] = [](const SemanticValues &sv) {
+      switch (sv.choice()) {
+      case 0: {
+        auto s1 = any_cast<std::string>(sv[0]);
+        auto s2 = any_cast<std::string>(sv[1]);
+        auto cp1 = decode_codepoint(s1.c_str(), s1.length());
+        auto cp2 = decode_codepoint(s2.c_str(), s2.length());
+        return std::make_pair(cp1, cp2);
+      }
+      case 1: {
+        auto s = any_cast<std::string>(sv[0]);
+        auto cp = decode_codepoint(s.c_str(), s.length());
+        return std::make_pair(cp, cp);
+      }
+      }
+      return std::make_pair<char32_t, char32_t>(0, 0);
+    };
+    g["Char"] = [](const SemanticValues &sv) {
+      return resolve_escape_sequence(sv.c_str(), sv.length());
+    };
+
+    g["AND"] = [](const SemanticValues &sv) { return *sv.c_str(); };
+    g["NOT"] = [](const SemanticValues &sv) { return *sv.c_str(); };
+    g["QUESTION"] = [](const SemanticValues &sv) { return *sv.c_str(); };
+    g["STAR"] = [](const SemanticValues &sv) { return *sv.c_str(); };
+    g["PLUS"] = [](const SemanticValues &sv) { return *sv.c_str(); };
+
+    g["DOT"] = [](const SemanticValues & /*sv*/) { return dot(); };
+
+    g["BeginCap"] = [](const SemanticValues &sv) { return sv.token(); };
+
+    g["BackRef"] = [&](const SemanticValues &sv) { return bkr(sv.token()); };
+
+    g["Ignore"] = [](const SemanticValues &sv) { return sv.size() > 0; };
+
+    g["Parameters"] = [](const SemanticValues &sv) {
+      return sv.transform<std::string>();
+    };
+
+    g["Arguments"] = [](const SemanticValues &sv) {
+      return sv.transform<std::shared_ptr<Ope>>();
+    };
+
+    g["PrecedenceClimbing"] = [](const SemanticValues &sv) {
+      PrecedenceClimbing::BinOpeInfo binOpeInfo;
+      size_t level = 1;
+      for (auto v : sv) {
+        auto tokens = any_cast<std::vector<std::string>>(v);
+        auto assoc = tokens[0][0];
+        for (size_t i = 1; i < tokens.size(); i++) {
+          const auto &tok = tokens[i];
+          binOpeInfo[tok] = std::make_pair(level, assoc);
+        }
+        level++;
+      }
+      Instruction instruction;
+      instruction.type = "precedence";
+      instruction.data = binOpeInfo;
+      return instruction;
+    };
+    g["PrecedenceInfo"] = [](const SemanticValues &sv) {
+      return sv.transform<std::string>();
+    };
+    g["PrecedenceOpe"] = [](const SemanticValues &sv) { return sv.token(); };
+    g["PrecedenceAssoc"] = [](const SemanticValues &sv) { return sv.token(); };
+  }
+
+  bool apply_precedence_instruction(Definition &rule,
+                                    const PrecedenceClimbing::BinOpeInfo &info,
+                                    const char *s, Log log) {
+    try {
+      auto &seq = dynamic_cast<Sequence &>(*rule.get_core_operator());
+      auto atom = seq.opes_[0];
+      auto &rep = dynamic_cast<Repetition &>(*seq.opes_[1]);
+      auto &seq1 = dynamic_cast<Sequence &>(*rep.ope_);
+      auto binop = seq1.opes_[0];
+      auto atom1 = seq1.opes_[1];
+
+      auto atom_name = dynamic_cast<Reference &>(*atom).name_;
+      auto binop_name = dynamic_cast<Reference &>(*binop).name_;
+      auto atom1_name = dynamic_cast<Reference &>(*atom1).name_;
+
+      if (!rep.is_zom() || atom_name != atom1_name || atom_name == binop_name) {
+        if (log) {
+          auto line = line_info(s, rule.s_);
+          log(line.first, line.second,
+              "'precedence' instruction cannt be applied to '" + rule.name +
+                  "'.");
+        }
+        return false;
+      }
+
+      rule.holder_->ope_ = pre(atom, binop, info, rule);
+      rule.disable_action = true;
+    } catch (...) {
+      if (log) {
+        auto line = line_info(s, rule.s_);
+        log(line.first, line.second,
+            "'precedence' instruction cannt be applied to '" + rule.name +
+                "'.");
+      }
+      return false;
+    }
+    return true;
+  }
+
+  std::shared_ptr<Grammar> perform_core(const char *s, size_t n,
+                                        const Rules &rules, std::string &start,
+                                        Log log) {
+    Data data;
+    any dt = &data;
+    auto r = g["Grammar"].parse(s, n, dt);
+
+    if (!r.ret) {
+      if (log) {
+        if (r.message_pos) {
+          auto line = line_info(s, r.message_pos);
+          log(line.first, line.second, r.message);
+        } else {
+          auto line = line_info(s, r.error_pos);
+          log(line.first, line.second, "syntax error");
+        }
+      }
+      return nullptr;
     }
 
-    void setup_actions() {
-        g["Definition"] = [&](const SemanticValues& sv, any& dt) {
-            Data& data = *dt.get<Data*>();
+    auto &grammar = *data.grammar;
 
-            auto ignore = (sv.size() == 4);
-            auto baseId = ignore ? 1u : 0u;
-
-            const auto& name = sv[baseId].get<std::string>();
-            auto ope = sv[baseId + 2].get<std::shared_ptr<Ope>>();
-
-            auto& grammar = *data.grammar;
-            if (!grammar.count(name)) {
-                auto& rule = grammar[name];
-                rule <= ope;
-                rule.name = name;
-                rule.ignoreSemanticValue = ignore;
-
-                if (data.start.empty()) {
-                    data.start = name;
-                }
-            } else {
-                data.duplicates.emplace_back(name, sv.c_str());
-            }
-        };
-
-        g["Expression"] = [&](const SemanticValues& sv) {
-            if (sv.size() == 1) {
-                return sv[0].get<std::shared_ptr<Ope>>();
-            } else {
-                std::vector<std::shared_ptr<Ope>> opes;
-                for (auto i = 0u; i < sv.size(); i++) {
-                    opes.emplace_back(sv[i].get<std::shared_ptr<Ope>>());
-                }
-                const std::shared_ptr<Ope> ope = std::make_shared<PrioritizedChoice>(opes);
-                return ope;
-            }
-        };
-
-        g["Sequence"] = [&](const SemanticValues& sv) {
-            if (sv.size() == 1) {
-                return sv[0].get<std::shared_ptr<Ope>>();
-            } else {
-                std::vector<std::shared_ptr<Ope>> opes;
-                for (const auto& x: sv) {
-                    opes.emplace_back(x.get<std::shared_ptr<Ope>>());
-                }
-                const std::shared_ptr<Ope> ope = std::make_shared<Sequence>(opes);
-                return ope;
-            }
-        };
-
-        g["Prefix"] = [&](const SemanticValues& sv) {
-            std::shared_ptr<Ope> ope;
-            if (sv.size() == 1) {
-                ope = sv[0].get<std::shared_ptr<Ope>>();
-            } else {
-                assert(sv.size() == 2);
-                auto tok = sv[0].get<char>();
-                ope = sv[1].get<std::shared_ptr<Ope>>();
-                if (tok == '&') {
-                    ope = apd(ope);
-                } else { // '!'
-                    ope = npd(ope);
-                }
-            }
-            return ope;
-        };
-
-        g["Suffix"] = [&](const SemanticValues& sv) {
-            auto ope = sv[0].get<std::shared_ptr<Ope>>();
-            if (sv.size() == 1) {
-                return ope;
-            } else {
-                assert(sv.size() == 2);
-                auto tok = sv[1].get<char>();
-                if (tok == '?') {
-                    return opt(ope);
-                } else if (tok == '*') {
-                    return zom(ope);
-                } else { // '+'
-                    return oom(ope);
-                }
-            }
-        };
-
-        g["Primary"] = [&](const SemanticValues& sv, any& dt) {
-            Data& data = *dt.get<Data*>();
-
-            switch (sv.choice()) {
-                case 0: { // Reference
-                    auto ignore = (sv.size() == 2);
-                    auto baseId = ignore ? 1u : 0u;
-
-                    const auto& ident = sv[baseId].get<std::string>();
-
-                    if (!data.references.count(ident)) {
-                        data.references[ident] = sv.c_str(); // for error handling
-                    }
-
-                    if (ignore) {
-                        return ign(ref(*data.grammar, ident, sv.c_str()));
-                    } else {
-                        return ref(*data.grammar, ident, sv.c_str());
-                    }
-                }
-                case 1: { // (Expression)
-                    return sv[1].get<std::shared_ptr<Ope>>();
-                }
-                case 2: { // TokenBoundary
-                    return tok(sv[1].get<std::shared_ptr<Ope>>());
-                }
-                case 3: { // Capture
-                    const auto& name = sv[0].get<std::string>();
-                    auto ope = sv[1].get<std::shared_ptr<Ope>>();
-                    return cap(ope, [name](const char* a_s, size_t a_n, Context& c) {
-                        c.captures[name] = std::string(a_s, a_n);
-                    });
-                }
-                default: {
-                    return sv[0].get<std::shared_ptr<Ope>>();
-                }
-            }
-        };
-
-        g["IdentCont"] = [](const SemanticValues& sv) {
-            return std::string(sv.c_str(), sv.length());
-        };
-
-        g["Literal"] = [this](const SemanticValues& sv) {
-            const auto& tok = sv.tokens.front();
-            return lit(resolve_escape_sequence(tok.first, tok.second));
-        };
-        g["Class"] = [this](const SemanticValues& sv) {
-            const auto& tok = sv.tokens.front();
-            return cls(resolve_escape_sequence(tok.first, tok.second));
-        };
-
-        g["AND"]      = [](const SemanticValues& sv) { return *sv.c_str(); };
-        g["NOT"]      = [](const SemanticValues& sv) { return *sv.c_str(); };
-        g["QUESTION"] = [](const SemanticValues& sv) { return *sv.c_str(); };
-        g["STAR"]     = [](const SemanticValues& sv) { return *sv.c_str(); };
-        g["PLUS"]     = [](const SemanticValues& sv) { return *sv.c_str(); };
-
-        g["DOT"] = [](const SemanticValues& /*sv*/) { return dot(); };
-
-        g["BeginCap"] = [](const SemanticValues& sv) { return sv.token(); };
-
-        g["BackRef"] = [&](const SemanticValues& sv) {
-            return bkr(sv.token());
-        };
+    // User provided rules
+    for (const auto &x : rules) {
+      auto name = x.first;
+      bool ignore = false;
+      if (!name.empty() && name[0] == '~') {
+        ignore = true;
+        name.erase(0, 1);
+      }
+      if (!name.empty()) {
+        auto &rule = grammar[name];
+        rule <= x.second;
+        rule.name = name;
+        rule.ignoreSemanticValue = ignore;
+      }
     }
 
-    std::shared_ptr<Grammar> perform_core(
-        const char*  s,
-        size_t       n,
-        std::string& start,
-        Log          log)
+    // Check duplicated definitions
+    bool ret = data.duplicates.empty();
+
+    for (const auto &x : data.duplicates) {
+      if (log) {
+        const auto &name = x.first;
+        auto ptr = x.second;
+        auto line = line_info(s, ptr);
+        log(line.first, line.second, "'" + name + "' is already defined.");
+      }
+    }
+
+    // Check missing definitions
+    for (auto &x : grammar) {
+      auto &rule = x.second;
+
+      ReferenceChecker vis(*data.grammar, rule.params);
+      rule.accept(vis);
+      for (const auto &y : vis.error_s) {
+        const auto &name = y.first;
+        const auto ptr = y.second;
+        if (log) {
+          auto line = line_info(s, ptr);
+          log(line.first, line.second, vis.error_message[name]);
+        }
+        ret = false;
+      }
+    }
+
+    if (!ret) { return nullptr; }
+
+    // Link references
+    for (auto &x : grammar) {
+      auto &rule = x.second;
+      LinkReferences vis(*data.grammar, rule.params);
+      rule.accept(vis);
+    }
+
+    // Check left recursion
+    ret = true;
+
+    for (auto &x : grammar) {
+      const auto &name = x.first;
+      auto &rule = x.second;
+
+      DetectLeftRecursion vis(name);
+      rule.accept(vis);
+      if (vis.error_s) {
+        if (log) {
+          auto line = line_info(s, vis.error_s);
+          log(line.first, line.second, "'" + name + "' is left recursive.");
+        }
+        ret = false;
+      }
+    }
+
+    if (!ret) { return nullptr; }
+
+    // Set root definition
+    auto &start_rule = (*data.grammar)[data.start];
+
+    // Check infinite loop
     {
-        Data data;
-        any dt = &data;
-        auto r = g["Grammar"].parse(s, n, dt);
-
-        if (!r.ret) {
-            if (log) {
-                if (r.message_pos) {
-                    auto line = line_info(s, r.message_pos);
-                    log(line.first, line.second, r.message);
-                } else {
-                    auto line = line_info(s, r.error_pos);
-                    log(line.first, line.second, "syntax error");
-                }
-            }
-            return nullptr;
+      DetectInfiniteLoop vis(data.start_pos, data.start);
+      start_rule.accept(vis);
+      if (vis.has_error) {
+        if (log) {
+          auto line = line_info(s, vis.error_s);
+          log(line.first, line.second,
+              "infinite loop is detected in '" + vis.error_name + "'.");
         }
-
-        auto& grammar = *data.grammar;
-
-        // Check duplicated definitions
-        bool ret = data.duplicates.empty();
-
-        for (const auto& x: data.duplicates) {
-            if (log) {
-                const auto& name = x.first;
-                auto ptr = x.second;
-                auto line = line_info(s, ptr);
-                log(line.first, line.second, "'" + name + "' is already defined.");
-            }
-        }
-
-        // Check missing definitions
-        for (const auto& x : data.references) {
-            const auto& name = x.first;
-            auto ptr = x.second;
-            if (!grammar.count(name)) {
-                if (log) {
-                    auto line = line_info(s, ptr);
-                    log(line.first, line.second, "'" + name + "' is not defined.");
-                }
-                ret = false;
-            }
-        }
-
-        if (!ret) {
-            return nullptr;
-        }
-
-        // Check left recursion
-        ret = true;
-
-        for (auto& x: grammar) {
-            const auto& name = x.first;
-            auto& rule = x.second;
-
-            DetectLeftRecursion lr(name);
-            rule.accept(lr);
-            if (lr.s_) {
-                if (log) {
-                    auto line = line_info(s, lr.s_);
-                    log(line.first, line.second, "'" + name + "' is left recursive.");
-                }
-                ret = false;;
-            }
-        }
-
-        if (!ret) {
-            return nullptr;
-        }
-
-        // Set root definition
-        start = data.start;
-
-        // Automatic whitespace skipping
-        if (grammar.count(WHITESPACE_DEFINITION_NAME)) {
-            auto& rule = (*data.grammar)[start];
-            rule.whitespaceOpe = wsp((*data.grammar)[WHITESPACE_DEFINITION_NAME].get_core_operator());
-        }
-
-        // Word expression
-        if (grammar.count(WORD_DEFINITION_NAME)) {
-            auto& rule = (*data.grammar)[start];
-            rule.wordOpe = (*data.grammar)[WORD_DEFINITION_NAME].get_core_operator();
-        }
-
-        return data.grammar;
+        return nullptr;
+      }
     }
 
-    bool is_hex(char c, int& v) {
-        if ('0' <= c && c <= '9') {
-            v = c - '0';
-            return true;
-        } else if ('a' <= c && c <= 'f') {
-            v = c - 'a' + 10;
-            return true;
-        } else if ('A' <= c && c <= 'F') {
-            v = c - 'A' + 10;
-            return true;
-        }
-        return false;
+    // Automatic whitespace skipping
+    if (grammar.count(WHITESPACE_DEFINITION_NAME)) {
+      for (auto &x : grammar) {
+        auto &rule = x.second;
+        auto ope = rule.get_core_operator();
+        if (IsLiteralToken::check(*ope)) { rule <= tok(ope); }
+      }
+
+      start_rule.whitespaceOpe =
+          wsp((*data.grammar)[WHITESPACE_DEFINITION_NAME].get_core_operator());
     }
 
-    bool is_digit(char c, int& v) {
-        if ('0' <= c && c <= '9') {
-            v = c - '0';
-            return true;
-        }
-        return false;
+    // Word expression
+    if (grammar.count(WORD_DEFINITION_NAME)) {
+      start_rule.wordOpe =
+          (*data.grammar)[WORD_DEFINITION_NAME].get_core_operator();
     }
 
-    std::pair<char, size_t> parse_hex_number(const char* s, size_t n, size_t i) {
-        char ret = 0;
-        int val;
-        while (i < n && is_hex(s[i], val)) {
-            ret = static_cast<char>(ret * 16 + val);
-            i++;
+    // Apply instructions
+    for (const auto &item : data.instructions) {
+      const auto &name = item.first;
+      const auto &instruction = item.second;
+      auto &rule = grammar[name];
+
+      if (instruction.type == "precedence") {
+        const auto &info =
+            any_cast<PrecedenceClimbing::BinOpeInfo>(instruction.data);
+
+        if (!apply_precedence_instruction(rule, info, s, log)) {
+          return nullptr;
         }
-        return std::make_pair(ret, i);
+      }
     }
 
-    std::pair<char, size_t> parse_octal_number(const char* s, size_t n, size_t i) {
-        char ret = 0;
-        int val;
-        while (i < n && is_digit(s[i], val)) {
-            ret = static_cast<char>(ret * 8 + val);
-            i++;
-        }
-        return std::make_pair(ret, i);
-    }
+    // Set root definition
+    start = data.start;
 
-    std::string resolve_escape_sequence(const char* s, size_t n) {
-        std::string r;
-        r.reserve(n);
+    return data.grammar;
+  }
 
-        size_t i = 0;
-        while (i < n) {
-            auto ch = s[i];
-            if (ch == '\\') {
-                i++;
-                switch (s[i]) {
-                    case 'n':  r += '\n'; i++; break;
-                    case 'r':  r += '\r'; i++; break;
-                    case 't':  r += '\t'; i++; break;
-                    case '\'': r += '\''; i++; break;
-                    case '"':  r += '"';  i++; break;
-                    case '[':  r += '[';  i++; break;
-                    case ']':  r += ']';  i++; break;
-                    case '\\': r += '\\'; i++; break;
-                    case 'x': {
-                        std::tie(ch, i) = parse_hex_number(s, n, i + 1);
-                        r += ch;
-                        break;
-                    }
-                    default: {
-                        std::tie(ch, i) = parse_octal_number(s, n, i);
-                        r += ch;
-                        break;
-                    }
-                }
-            } else {
-                r += ch;
-                i++;
-            }
-        }
-        return r;
-    }
-
-    Grammar g;
+  Grammar g;
 };
 
 /*-----------------------------------------------------------------------------
  *  AST
  *---------------------------------------------------------------------------*/
 
-const int AstDefaultTag = -1;
+template <typename Annotation> struct AstBase : public Annotation {
+  AstBase(const char *a_path, size_t a_line, size_t a_column,
+          const char *a_name, size_t a_position, size_t a_length,
+          size_t a_choice_count, size_t a_choice,
+          const std::vector<std::shared_ptr<AstBase>> &a_nodes)
+      : path(a_path ? a_path : ""), line(a_line), column(a_column),
+        name(a_name), position(a_position), length(a_length),
+        choice_count(a_choice_count), choice(a_choice), original_name(a_name),
+        original_choice_count(a_choice_count), original_choice(a_choice),
+        tag(str2tag(a_name)), original_tag(tag), is_token(false),
+        nodes(a_nodes) {}
 
-#ifndef PEGLIB_NO_CONSTEXPR_SUPPORT
-inline constexpr unsigned int str2tag(const char* str, int h = 0) {
-    return !str[h] ? 5381 : (str2tag(str, h + 1) * 33) ^ static_cast<unsigned char>(str[h]);
-}
+  AstBase(const char *a_path, size_t a_line, size_t a_column,
+          const char *a_name, size_t a_position, size_t a_length,
+          size_t a_choice_count, size_t a_choice, const std::string &a_token)
+      : path(a_path ? a_path : ""), line(a_line), column(a_column),
+        name(a_name), position(a_position), length(a_length),
+        choice_count(a_choice_count), choice(a_choice), original_name(a_name),
+        original_choice_count(a_choice_count), original_choice(a_choice),
+        tag(str2tag(a_name)), original_tag(tag), is_token(true),
+        token(a_token) {}
 
-namespace udl {
-inline constexpr unsigned int operator "" _(const char* s, size_t) {
-    return str2tag(s);
-}
-}
-#endif
+  AstBase(const AstBase &ast, const char *a_original_name, size_t a_position,
+          size_t a_length, size_t a_original_choice_count,
+          size_t a_original_choise)
+      : path(ast.path), line(ast.line), column(ast.column), name(ast.name),
+        position(a_position), length(a_length), choice_count(ast.choice_count),
+        choice(ast.choice), original_name(a_original_name),
+        original_choice_count(a_original_choice_count),
+        original_choice(a_original_choise), tag(ast.tag),
+        original_tag(str2tag(a_original_name)), is_token(ast.is_token),
+        token(ast.token), nodes(ast.nodes), parent(ast.parent) {}
 
-template <typename Annotation>
-struct AstBase : public Annotation
-{
-    AstBase(const char* a_path, size_t a_line, size_t a_column, const char* a_name, const std::vector<std::shared_ptr<AstBase>>& a_nodes)
-        : path(a_path ? a_path : "")
-        , line(a_line)
-        , column(a_column)
-        , name(a_name)
-        , original_name(a_name)
-#ifndef PEGLIB_NO_CONSTEXPR_SUPPORT
-        , tag(str2tag(a_name))
-        , original_tag(tag)
-#endif
-        , is_token(false)
-        , nodes(a_nodes)
-    {}
+  const std::string path;
+  const size_t line = 1;
+  const size_t column = 1;
 
-    AstBase(const char* a_path, size_t a_line, size_t a_column, const char* a_name, const std::string& a_token)
-        : path(a_path ? a_path : "")
-        , line(a_line)
-        , column(a_column)
-        , name(a_name)
-        , original_name(a_name)
-#ifndef PEGLIB_NO_CONSTEXPR_SUPPORT
-        , tag(str2tag(a_name))
-        , original_tag(tag)
-#endif
-        , is_token(true)
-        , token(a_token)
-    {}
+  const std::string name;
+  size_t position;
+  size_t length;
+  const size_t choice_count;
+  const size_t choice;
+  const std::string original_name;
+  const size_t original_choice_count;
+  const size_t original_choice;
+  const unsigned int tag;
+  const unsigned int original_tag;
 
-    AstBase(const AstBase& ast, const char* a_original_name)
-        : path(ast.path)
-        , line(ast.line)
-        , column(ast.column)
-        , name(ast.name)
-        , original_name(a_original_name)
-#ifndef PEGLIB_NO_CONSTEXPR_SUPPORT
-        , tag(ast.tag)
-        , original_tag(str2tag(a_original_name))
-#endif
-        , is_token(ast.is_token)
-        , token(ast.token)
-        , nodes(ast.nodes)
-        , parent(ast.parent)
-    {}
+  const bool is_token;
+  const std::string token;
 
-    const std::string                 path;
-    const size_t                      line;
-    const size_t                      column;
-
-    const std::string                 name;
-    const std::string                 original_name;
-#ifndef PEGLIB_NO_CONSTEXPR_SUPPORT
-    const unsigned int                tag;
-    const unsigned int                original_tag;
-#endif
-
-    const bool                        is_token;
-    const std::string                 token;
-
-    std::vector<std::shared_ptr<AstBase<Annotation>>> nodes;
-    std::shared_ptr<AstBase<Annotation>>              parent;
+  std::vector<std::shared_ptr<AstBase<Annotation>>> nodes;
+  std::weak_ptr<AstBase<Annotation>> parent;
 };
 
 template <typename T>
-void ast_to_s_core(
-    const std::shared_ptr<T>& ptr,
-    std::string& s,
-    int level,
-    std::function<std::string (const T& ast, int level)> fn) {
-
-    const auto& ast = *ptr;
-    for (auto i = 0; i < level; i++) {
-        s += "  ";
-    }
-    std::string name;
-    if (ast.name == ast.original_name) {
-        name = ast.name;
-    } else {
-        name = ast.original_name + "[" + ast.name + "]";
-    }
-    if (ast.is_token) {
-        s += "- " + name + " (" + ast.token + ")\n";
-    } else {
-        s += "+ " + name + "\n";
-    }
-    if (fn) {
-      s += fn(ast, level + 1);
-    }
-    for (auto node : ast.nodes) {
-        ast_to_s_core(node, s, level + 1, fn);
-    }
+void ast_to_s_core(const std::shared_ptr<T> &ptr, std::string &s, int level,
+                   std::function<std::string(const T &ast, int level)> fn) {
+  const auto &ast = *ptr;
+  for (auto i = 0; i < level; i++) {
+    s += "  ";
+  }
+  auto name = ast.original_name;
+  if (ast.original_choice_count > 0) {
+    name += "/" + std::to_string(ast.original_choice);
+  }
+  if (ast.name != ast.original_name) { name += "[" + ast.name + "]"; }
+  if (ast.is_token) {
+    s += "- " + name + " (" + ast.token + ")\n";
+  } else {
+    s += "+ " + name + "\n";
+  }
+  if (fn) { s += fn(ast, level + 1); }
+  for (auto node : ast.nodes) {
+    ast_to_s_core(node, s, level + 1, fn);
+  }
 }
 
 template <typename T>
-std::string ast_to_s(
-    const std::shared_ptr<T>& ptr,
-    std::function<std::string (const T& ast, int level)> fn = nullptr) {
-
-    std::string s;
-    ast_to_s_core(ptr, s, 0, fn);
-    return s;
+std::string
+ast_to_s(const std::shared_ptr<T> &ptr,
+         std::function<std::string(const T &ast, int level)> fn = nullptr) {
+  std::string s;
+  ast_to_s_core(ptr, s, 0, fn);
+  return s;
 }
 
-struct AstOptimizer
-{
-    AstOptimizer(bool optimize_nodes, const std::vector<std::string>& filters = {})
-        : optimize_nodes_(optimize_nodes)
-        , filters_(filters) {}
+struct AstOptimizer {
+  AstOptimizer(bool optimize_nodes,
+               const std::vector<std::string> &filters = {})
+      : optimize_nodes_(optimize_nodes), filters_(filters) {}
 
-    template <typename T>
-    std::shared_ptr<T> optimize(std::shared_ptr<T> original, std::shared_ptr<T> parent = nullptr) {
+  template <typename T>
+  std::shared_ptr<T> optimize(std::shared_ptr<T> original,
+                              std::shared_ptr<T> parent = nullptr) {
+    auto found = std::find(filters_.begin(), filters_.end(), original->name) !=
+                 filters_.end();
+    bool opt = optimize_nodes_ ? !found : found;
 
-        auto found = std::find(filters_.begin(), filters_.end(), original->name) != filters_.end();
-        bool opt = optimize_nodes_ ? !found : found;
-
-        if (opt && original->nodes.size() == 1) {
-            auto child = optimize(original->nodes[0], parent);
-            return std::make_shared<T>(*child, original->name.c_str());
-        }
-
-        auto ast = std::make_shared<T>(*original);
-        ast->parent = parent;
-        ast->nodes.clear();
-        for (auto node : original->nodes) {
-            auto child = optimize(node, ast);
-            ast->nodes.push_back(child);
-        }
-        return ast;
+    if (opt && original->nodes.size() == 1) {
+      auto child = optimize(original->nodes[0], parent);
+      return std::make_shared<T>(*child, original->name.c_str(),
+                                 original->choice_count, original->position,
+                                 original->length, original->choice);
     }
 
+    auto ast = std::make_shared<T>(*original);
+    ast->parent = parent;
+    ast->nodes.clear();
+    for (auto node : original->nodes) {
+      auto child = optimize(node, ast);
+      ast->nodes.push_back(child);
+    }
+    return ast;
+  }
+
 private:
-    const bool                     optimize_nodes_;
-    const std::vector<std::string> filters_;
+  const bool optimize_nodes_;
+  const std::vector<std::string> filters_;
 };
 
 struct EmptyType {};
@@ -2854,195 +4130,197 @@ typedef AstBase<EmptyType> Ast;
  *  parser
  *---------------------------------------------------------------------------*/
 
-class parser
-{
+class parser {
 public:
-    parser() = default;
+  parser() = default;
 
-    parser(const char* s, size_t n) {
-        load_grammar(s, n);
+  parser(const char *s, size_t n, const Rules &rules) {
+    load_grammar(s, n, rules);
+  }
+
+  parser(const char *s, const Rules &rules) : parser(s, strlen(s), rules) {}
+
+  parser(const char *s, size_t n) : parser(s, n, Rules()) {}
+
+  parser(const char *s) : parser(s, strlen(s), Rules()) {}
+
+  operator bool() { return grammar_ != nullptr; }
+
+  bool load_grammar(const char *s, size_t n, const Rules &rules) {
+    grammar_ = ParserGenerator::parse(s, n, rules, start_, log);
+    return grammar_ != nullptr;
+  }
+
+  bool load_grammar(const char *s, size_t n) {
+    return load_grammar(s, n, Rules());
+  }
+
+  bool load_grammar(const char *s, const Rules &rules) {
+    auto n = strlen(s);
+    return load_grammar(s, n, rules);
+  }
+
+  bool load_grammar(const char *s) {
+    auto n = strlen(s);
+    return load_grammar(s, n);
+  }
+
+  bool parse_n(const char *s, size_t n, const char *path = nullptr) const {
+    if (grammar_ != nullptr) {
+      const auto &rule = (*grammar_)[start_];
+      auto r = rule.parse(s, n, path);
+      output_log(s, n, r);
+      return r.ret && r.len == n;
     }
+    return false;
+  }
 
-    parser(const char* s)
-        : parser(s, strlen(s)) {}
+  bool parse(const char *s, const char *path = nullptr) const {
+    auto n = strlen(s);
+    return parse_n(s, n, path);
+  }
 
-    operator bool() {
-        return grammar_ != nullptr;
+  bool parse_n(const char *s, size_t n, any &dt,
+               const char *path = nullptr) const {
+    if (grammar_ != nullptr) {
+      const auto &rule = (*grammar_)[start_];
+      auto r = rule.parse(s, n, dt, path);
+      output_log(s, n, r);
+      return r.ret && r.len == n;
     }
+    return false;
+  }
 
-    bool load_grammar(const char* s, size_t n) {
-        grammar_ = ParserGenerator::parse(s, n, start_, log);
-        return grammar_ != nullptr;
+  bool parse(const char *s, any &dt, const char *path = nullptr) const {
+    auto n = strlen(s);
+    return parse_n(s, n, dt, path);
+  }
+
+  template <typename T>
+  bool parse_n(const char *s, size_t n, T &val,
+               const char *path = nullptr) const {
+    if (grammar_ != nullptr) {
+      const auto &rule = (*grammar_)[start_];
+      auto r = rule.parse_and_get_value(s, n, val, path);
+      output_log(s, n, r);
+      return r.ret && r.len == n;
     }
+    return false;
+  }
 
-    bool load_grammar(const char* s) {
-        auto n = strlen(s);
-        return load_grammar(s, n);
+  template <typename T>
+  bool parse(const char *s, T &val, const char *path = nullptr) const {
+    auto n = strlen(s);
+    return parse_n(s, n, val, path);
+  }
+
+  template <typename T>
+  bool parse_n(const char *s, size_t n, any &dt, T &val,
+               const char *path = nullptr) const {
+    if (grammar_ != nullptr) {
+      const auto &rule = (*grammar_)[start_];
+      auto r = rule.parse_and_get_value(s, n, dt, val, path);
+      output_log(s, n, r);
+      return r.ret && r.len == n;
     }
+    return false;
+  }
 
-    bool parse_n(const char* s, size_t n, const char* path = nullptr) const {
-        if (grammar_ != nullptr) {
-            const auto& rule = (*grammar_)[start_];
-            auto r = rule.parse(s, n, path);
-            output_log(s, n, r);
-            return r.ret && r.len == n;
-        }
-        return false;
+  template <typename T>
+  bool parse(const char *s, any &dt, T &val,
+             const char * /*path*/ = nullptr) const {
+    auto n = strlen(s);
+    return parse_n(s, n, dt, val);
+  }
+
+  Definition &operator[](const char *s) { return (*grammar_)[s]; }
+
+  const Definition &operator[](const char *s) const { return (*grammar_)[s]; }
+
+  std::vector<std::string> get_rule_names() {
+    std::vector<std::string> rules;
+    rules.reserve(grammar_->size());
+    for (auto const &r : *grammar_) {
+      rules.emplace_back(r.first);
     }
+    return rules;
+  }
 
-    bool parse(const char* s, const char* path = nullptr) const {
-        auto n = strlen(s);
-        return parse_n(s, n, path);
+  void enable_packrat_parsing() {
+    if (grammar_ != nullptr) {
+      auto &rule = (*grammar_)[start_];
+      rule.enablePackratParsing = true;
     }
+  }
 
-    bool parse_n(const char* s, size_t n, any& dt, const char* path = nullptr) const {
-        if (grammar_ != nullptr) {
-            const auto& rule = (*grammar_)[start_];
-            auto r = rule.parse(s, n, dt, path);
-            output_log(s, n, r);
-            return r.ret && r.len == n;
-        }
-        return false;
+  template <typename T = Ast> parser &enable_ast() {
+    for (auto &x : *grammar_) {
+      const auto &name = x.first;
+      auto &rule = x.second;
+
+      if (!rule.action) {
+        rule.action = [&](const SemanticValues &sv) {
+          auto line = sv.line_info();
+
+          if (rule.is_token()) {
+            return std::make_shared<T>(
+                sv.path, line.first, line.second, name.c_str(),
+                std::distance(sv.ss, sv.c_str()), sv.length(),
+                sv.choice_count(), sv.choice(), sv.token());
+          }
+
+          auto ast = std::make_shared<T>(
+              sv.path, line.first, line.second, name.c_str(),
+              std::distance(sv.ss, sv.c_str()), sv.length(), sv.choice_count(),
+              sv.choice(), sv.transform<std::shared_ptr<T>>());
+
+          for (auto node : ast->nodes) {
+            node->parent = ast;
+          }
+          return ast;
+        };
+      }
     }
+    return *this;
+  }
 
-    bool parse(const char* s, any& dt, const char* path = nullptr) const {
-        auto n = strlen(s);
-        return parse_n(s, n, dt, path);
+  void enable_trace(TracerEnter tracer_enter, TracerLeave tracer_leave) {
+    if (grammar_ != nullptr) {
+      auto &rule = (*grammar_)[start_];
+      rule.tracer_enter = tracer_enter;
+      rule.tracer_leave = tracer_leave;
     }
+  }
 
-    template <typename T>
-    bool parse_n(const char* s, size_t n, T& val, const char* path = nullptr) const {
-        if (grammar_ != nullptr) {
-            const auto& rule = (*grammar_)[start_];
-            auto r = rule.parse_and_get_value(s, n, val, path);
-            output_log(s, n, r);
-            return r.ret && r.len == n;
-        }
-        return false;
-    }
-
-    template <typename T>
-    bool parse(const char* s, T& val, const char* path = nullptr) const {
-        auto n = strlen(s);
-        return parse_n(s, n, val, path);
-    }
-
-    template <typename T>
-    bool parse_n(const char* s, size_t n, any& dt, T& val, const char* path = nullptr) const {
-        if (grammar_ != nullptr) {
-            const auto& rule = (*grammar_)[start_];
-            auto r = rule.parse_and_get_value(s, n, dt, val, path);
-            output_log(s, n, r);
-            return r.ret && r.len == n;
-        }
-        return false;
-    }
-
-    template <typename T>
-    bool parse(const char* s, any& dt, T& val, const char* /*path*/ = nullptr) const {
-        auto n = strlen(s);
-        return parse_n(s, n, dt, val);
-    }
-
-    bool search(const char* s, size_t n, size_t& mpos, size_t& mlen) const {
-        const auto& rule = (*grammar_)[start_];
-        if (grammar_ != nullptr) {
-            size_t pos = 0;
-            while (pos < n) {
-                size_t len = n - pos;
-                auto r = rule.parse(s + pos, len);
-                if (r.ret) {
-                    mpos = pos;
-                    mlen = len;
-                    return true;
-                }
-                pos++;
-            }
-        }
-        mpos = 0;
-        mlen = 0;
-        return false;
-    }
-
-    bool search(const char* s, size_t& mpos, size_t& mlen) const {
-        auto n = strlen(s);
-        return search(s, n, mpos, mlen);
-    }
-
-    Definition& operator[](const char* s) {
-        return (*grammar_)[s];
-    }
-
-    void enable_packrat_parsing() {
-        if (grammar_ != nullptr) {
-            auto& rule = (*grammar_)[start_];
-            rule.enablePackratParsing = true;
-        }
-    }
-
-    template <typename T = Ast>
-    parser& enable_ast() {
-        for (auto& x: *grammar_) {
-            const auto& name = x.first;
-            auto& rule = x.second;
-
-            if (!rule.action) {
-                auto is_token = rule.is_token;
-                rule.action = [=](const SemanticValues& sv) {
-                    auto line = line_info(sv.ss, sv.c_str());
-
-                    if (is_token) {
-                        return std::make_shared<T>(sv.path, line.first, line.second, name.c_str(), sv.token());
-                    }
-
-                    auto ast = std::make_shared<T>(sv.path, line.first, line.second, name.c_str(), sv.transform<std::shared_ptr<T>>());
-
-                    for (auto node: ast->nodes) {
-                        node->parent = ast;
-                    }
-                    return ast;
-                };
-            }
-        }
-        return *this;
-    }
-
-    void enable_trace(Tracer tracer) {
-        if (grammar_ != nullptr) {
-            auto& rule = (*grammar_)[start_];
-            rule.tracer = tracer;
-        }
-    }
-
-    Log log;
+  Log log;
 
 private:
-    void output_log(const char* s, size_t n, const Definition::Result& r) const {
-        if (log) {
-            if (!r.ret) {
-                if (r.message_pos) {
-                    auto line = line_info(s, r.message_pos);
-                    log(line.first, line.second, r.message);
-                } else {
-                    auto line = line_info(s, r.error_pos);
-                    log(line.first, line.second, "syntax error");
-                }
-            } else if (r.len != n) {
-                auto line = line_info(s, s + r.len);
-                log(line.first, line.second, "syntax error");
-            }
+  void output_log(const char *s, size_t n, const Definition::Result &r) const {
+    if (log) {
+      if (!r.ret) {
+        if (r.message_pos) {
+          auto line = line_info(s, r.message_pos);
+          log(line.first, line.second, r.message);
+        } else {
+          auto line = line_info(s, r.error_pos);
+          log(line.first, line.second, "syntax error");
         }
+      } else if (r.len != n) {
+        auto line = line_info(s, s + r.len);
+        log(line.first, line.second, "syntax error");
+      }
     }
+  }
 
-    std::shared_ptr<Grammar> grammar_;
-    std::string              start_;
+  std::shared_ptr<Grammar> grammar_;
+  std::string start_;
 };
 
 } // namespace peg
 
 #endif
 
-// vim: et ts=4 sw=4 cin cino={1s ff=unix
+// vim: et ts=2 sw=2 cin cino={1s ff=unix
 #ifndef ARGH
 #define ARGH
 //#pragma once
@@ -3148,6 +4426,7 @@ namespace argh
       // begin() and end() for using range-for over positional args.
       std::vector<std::string>::const_iterator begin() const { return pos_args_.cbegin(); }
       std::vector<std::string>::const_iterator end()   const { return pos_args_.cend();   }
+      size_t size()                                    const { return pos_args_.size();   }
 
       //////////////////////////////////////////////////////////////////////////
       // Accessors
@@ -3193,6 +4472,7 @@ namespace argh
       bool is_number(std::string const& arg) const;
       bool is_option(std::string const& arg) const;
       bool got_flag(std::string const& name) const;
+      bool is_param(std::string const& name) const;
 
    private:
       std::vector<std::string> args_;
@@ -3243,13 +4523,30 @@ namespace argh
          }
 
          // if the option is unregistered and should be a multi-flag
-         if (1 == (args_[i].size() - name.size()) &&                  // single dash
-            argh::parser::SINGLE_DASH_IS_MULTIFLAG & mode &&         // multi-flag mode
-            registeredParams_.find(name) == registeredParams_.end()) // unregistered
+         if (1 == (args_[i].size() - name.size()) &&         // single dash
+            argh::parser::SINGLE_DASH_IS_MULTIFLAG & mode && // multi-flag mode
+            !is_param(name))                                  // unregistered
          {
+            std::string keep_param; 
+            
+            if (!name.empty() && is_param(std::string(1ul, name.back()))) // last char is param
+            {
+               keep_param += name.back();
+               name.resize(name.size() - 1);
+            }
+
             for (auto const& c : name)
             {
                flags_.emplace(std::string{ c });
+            }
+
+            if (!keep_param.empty())
+            {
+               name = keep_param;
+            }
+            else
+            {
+               continue; // do not consider other options for this arg
             }
          }
 
@@ -3269,16 +4566,21 @@ namespace argh
          // PREFER_PARAM_FOR_UNREG_OPTION: a non-registered 'name' is determined a parameter, the next arg
          //                                will be the value of that option.
 
-         if (registeredParams_.find(name) != registeredParams_.end() ||
-            argh::parser::PREFER_PARAM_FOR_UNREG_OPTION & mode)
+         assert(!(mode & argh::parser::PREFER_FLAG_FOR_UNREG_OPTION)
+             || !(mode & argh::parser::PREFER_PARAM_FOR_UNREG_OPTION));
+
+         bool preferParam = mode & argh::parser::PREFER_PARAM_FOR_UNREG_OPTION;
+
+         if (is_param(name) || preferParam)
          {
             params_.insert({ name, args_[i + 1] });
             ++i; // skip next value, it is not a free parameter
             continue;
          }
-
-         if (argh::parser::PREFER_FLAG_FOR_UNREG_OPTION & mode)
+         else
+         {
             flags_.emplace(name);
+         }
       };
    }
 
@@ -3325,6 +4627,13 @@ namespace argh
    inline bool argh::parser::got_flag(std::string const& name) const
    {
       return flags_.end() != flags_.find(trim_leading_dashes(name));
+   }
+
+   //////////////////////////////////////////////////////////////////////////
+
+   inline bool argh::parser::is_param(std::string const& name) const
+   {
+      return registeredParams_.count(name);
    }
 
    //////////////////////////////////////////////////////////////////////////
@@ -3444,6 +4753,7 @@ namespace argh
          registeredParams_.insert(trim_leading_dashes(name));
    }
 }
+
 
 #endif
 
@@ -3573,7 +4883,6 @@ class LIB_API TimeStamp {
         ~TimeStamp() = default;
 
     public:
-        
         inline TimeStamp& seconds(const int32_t &v) noexcept {
             m_seconds = v;
             return *this;
@@ -3581,7 +4890,6 @@ class LIB_API TimeStamp {
         inline int32_t seconds() const noexcept {
             return m_seconds;
         }
-        
         inline TimeStamp& microseconds(const int32_t &v) noexcept {
             m_microseconds = v;
             return *this;
@@ -3589,17 +4897,29 @@ class LIB_API TimeStamp {
         inline int32_t microseconds() const noexcept {
             return m_microseconds;
         }
-        
 
     public:
         template<class Visitor>
+        inline void accept(uint32_t fieldId, Visitor &visitor) {
+            (void)fieldId;
+            (void)visitor;
+//            visitor.preVisit(ID(), ShortName(), LongName());
+            if (1 == fieldId) {
+                doVisit(1, std::move("int32_t"s), std::move("seconds"s), m_seconds, visitor);
+                return;
+            }
+            if (2 == fieldId) {
+                doVisit(2, std::move("int32_t"s), std::move("microseconds"s), m_microseconds, visitor);
+                return;
+            }
+//            visitor.postVisit();
+        }
+
+        template<class Visitor>
         inline void accept(Visitor &visitor) {
             visitor.preVisit(ID(), ShortName(), LongName());
-            
             doVisit(1, std::move("int32_t"s), std::move("seconds"s), m_seconds, visitor);
-            
             doVisit(2, std::move("int32_t"s), std::move("microseconds"s), m_microseconds, visitor);
-            
             visitor.postVisit();
         }
 
@@ -3607,20 +4927,14 @@ class LIB_API TimeStamp {
         inline void accept(PreVisitor &&preVisit, Visitor &&visit, PostVisitor &&postVisit) {
             (void)visit; // Prevent warnings from empty messages.
             std::forward<PreVisitor>(preVisit)(ID(), ShortName(), LongName());
-            
             doTripletForwardVisit(1, std::move("int32_t"s), std::move("seconds"s), m_seconds, preVisit, visit, postVisit);
-            
             doTripletForwardVisit(2, std::move("int32_t"s), std::move("microseconds"s), m_microseconds, preVisit, visit, postVisit);
-            
             std::forward<PostVisitor>(postVisit)();
         }
 
     private:
-        
         int32_t m_seconds{ 0 }; // field identifier = 1.
-        
         int32_t m_microseconds{ 0 }; // field identifier = 2.
-        
 };
 }}
 
@@ -3761,7 +5075,6 @@ class LIB_API Envelope {
         ~Envelope() = default;
 
     public:
-        
         inline Envelope& dataType(const int32_t &v) noexcept {
             m_dataType = v;
             return *this;
@@ -3769,7 +5082,6 @@ class LIB_API Envelope {
         inline int32_t dataType() const noexcept {
             return m_dataType;
         }
-        
         inline Envelope& serializedData(const std::string &v) noexcept {
             m_serializedData = v;
             return *this;
@@ -3777,7 +5089,6 @@ class LIB_API Envelope {
         inline std::string serializedData() const noexcept {
             return m_serializedData;
         }
-        
         inline Envelope& sent(const cluon::data::TimeStamp &v) noexcept {
             m_sent = v;
             return *this;
@@ -3785,7 +5096,6 @@ class LIB_API Envelope {
         inline cluon::data::TimeStamp sent() const noexcept {
             return m_sent;
         }
-        
         inline Envelope& received(const cluon::data::TimeStamp &v) noexcept {
             m_received = v;
             return *this;
@@ -3793,7 +5103,6 @@ class LIB_API Envelope {
         inline cluon::data::TimeStamp received() const noexcept {
             return m_received;
         }
-        
         inline Envelope& sampleTimeStamp(const cluon::data::TimeStamp &v) noexcept {
             m_sampleTimeStamp = v;
             return *this;
@@ -3801,7 +5110,6 @@ class LIB_API Envelope {
         inline cluon::data::TimeStamp sampleTimeStamp() const noexcept {
             return m_sampleTimeStamp;
         }
-        
         inline Envelope& senderStamp(const uint32_t &v) noexcept {
             m_senderStamp = v;
             return *this;
@@ -3809,25 +5117,49 @@ class LIB_API Envelope {
         inline uint32_t senderStamp() const noexcept {
             return m_senderStamp;
         }
-        
 
     public:
         template<class Visitor>
+        inline void accept(uint32_t fieldId, Visitor &visitor) {
+            (void)fieldId;
+            (void)visitor;
+//            visitor.preVisit(ID(), ShortName(), LongName());
+            if (1 == fieldId) {
+                doVisit(1, std::move("int32_t"s), std::move("dataType"s), m_dataType, visitor);
+                return;
+            }
+            if (2 == fieldId) {
+                doVisit(2, std::move("std::string"s), std::move("serializedData"s), m_serializedData, visitor);
+                return;
+            }
+            if (3 == fieldId) {
+                doVisit(3, std::move("cluon::data::TimeStamp"s), std::move("sent"s), m_sent, visitor);
+                return;
+            }
+            if (4 == fieldId) {
+                doVisit(4, std::move("cluon::data::TimeStamp"s), std::move("received"s), m_received, visitor);
+                return;
+            }
+            if (5 == fieldId) {
+                doVisit(5, std::move("cluon::data::TimeStamp"s), std::move("sampleTimeStamp"s), m_sampleTimeStamp, visitor);
+                return;
+            }
+            if (6 == fieldId) {
+                doVisit(6, std::move("uint32_t"s), std::move("senderStamp"s), m_senderStamp, visitor);
+                return;
+            }
+//            visitor.postVisit();
+        }
+
+        template<class Visitor>
         inline void accept(Visitor &visitor) {
             visitor.preVisit(ID(), ShortName(), LongName());
-            
             doVisit(1, std::move("int32_t"s), std::move("dataType"s), m_dataType, visitor);
-            
             doVisit(2, std::move("std::string"s), std::move("serializedData"s), m_serializedData, visitor);
-            
             doVisit(3, std::move("cluon::data::TimeStamp"s), std::move("sent"s), m_sent, visitor);
-            
             doVisit(4, std::move("cluon::data::TimeStamp"s), std::move("received"s), m_received, visitor);
-            
             doVisit(5, std::move("cluon::data::TimeStamp"s), std::move("sampleTimeStamp"s), m_sampleTimeStamp, visitor);
-            
             doVisit(6, std::move("uint32_t"s), std::move("senderStamp"s), m_senderStamp, visitor);
-            
             visitor.postVisit();
         }
 
@@ -3835,36 +5167,22 @@ class LIB_API Envelope {
         inline void accept(PreVisitor &&preVisit, Visitor &&visit, PostVisitor &&postVisit) {
             (void)visit; // Prevent warnings from empty messages.
             std::forward<PreVisitor>(preVisit)(ID(), ShortName(), LongName());
-            
             doTripletForwardVisit(1, std::move("int32_t"s), std::move("dataType"s), m_dataType, preVisit, visit, postVisit);
-            
             doTripletForwardVisit(2, std::move("std::string"s), std::move("serializedData"s), m_serializedData, preVisit, visit, postVisit);
-            
             doTripletForwardVisit(3, std::move("cluon::data::TimeStamp"s), std::move("sent"s), m_sent, preVisit, visit, postVisit);
-            
             doTripletForwardVisit(4, std::move("cluon::data::TimeStamp"s), std::move("received"s), m_received, preVisit, visit, postVisit);
-            
             doTripletForwardVisit(5, std::move("cluon::data::TimeStamp"s), std::move("sampleTimeStamp"s), m_sampleTimeStamp, preVisit, visit, postVisit);
-            
             doTripletForwardVisit(6, std::move("uint32_t"s), std::move("senderStamp"s), m_senderStamp, preVisit, visit, postVisit);
-            
             std::forward<PostVisitor>(postVisit)();
         }
 
     private:
-        
         int32_t m_dataType{ 0 }; // field identifier = 1.
-        
         std::string m_serializedData{ ""s }; // field identifier = 2.
-        
         cluon::data::TimeStamp m_sent{  }; // field identifier = 3.
-        
         cluon::data::TimeStamp m_received{  }; // field identifier = 4.
-        
         cluon::data::TimeStamp m_sampleTimeStamp{  }; // field identifier = 5.
-        
         uint32_t m_senderStamp{ 0 }; // field identifier = 6.
-        
 };
 }}
 
@@ -4005,7 +5323,6 @@ class LIB_API PlayerCommand {
         ~PlayerCommand() = default;
 
     public:
-        
         inline PlayerCommand& command(const uint8_t &v) noexcept {
             m_command = v;
             return *this;
@@ -4013,7 +5330,6 @@ class LIB_API PlayerCommand {
         inline uint8_t command() const noexcept {
             return m_command;
         }
-        
         inline PlayerCommand& seekTo(const float &v) noexcept {
             m_seekTo = v;
             return *this;
@@ -4021,17 +5337,29 @@ class LIB_API PlayerCommand {
         inline float seekTo() const noexcept {
             return m_seekTo;
         }
-        
 
     public:
         template<class Visitor>
+        inline void accept(uint32_t fieldId, Visitor &visitor) {
+            (void)fieldId;
+            (void)visitor;
+//            visitor.preVisit(ID(), ShortName(), LongName());
+            if (1 == fieldId) {
+                doVisit(1, std::move("uint8_t"s), std::move("command"s), m_command, visitor);
+                return;
+            }
+            if (2 == fieldId) {
+                doVisit(2, std::move("float"s), std::move("seekTo"s), m_seekTo, visitor);
+                return;
+            }
+//            visitor.postVisit();
+        }
+
+        template<class Visitor>
         inline void accept(Visitor &visitor) {
             visitor.preVisit(ID(), ShortName(), LongName());
-            
             doVisit(1, std::move("uint8_t"s), std::move("command"s), m_command, visitor);
-            
             doVisit(2, std::move("float"s), std::move("seekTo"s), m_seekTo, visitor);
-            
             visitor.postVisit();
         }
 
@@ -4039,20 +5367,14 @@ class LIB_API PlayerCommand {
         inline void accept(PreVisitor &&preVisit, Visitor &&visit, PostVisitor &&postVisit) {
             (void)visit; // Prevent warnings from empty messages.
             std::forward<PreVisitor>(preVisit)(ID(), ShortName(), LongName());
-            
             doTripletForwardVisit(1, std::move("uint8_t"s), std::move("command"s), m_command, preVisit, visit, postVisit);
-            
             doTripletForwardVisit(2, std::move("float"s), std::move("seekTo"s), m_seekTo, preVisit, visit, postVisit);
-            
             std::forward<PostVisitor>(postVisit)();
         }
 
     private:
-        
         uint8_t m_command{ 0 }; // field identifier = 1.
-        
         float m_seekTo{ 0.0f }; // field identifier = 2.
-        
 };
 }}
 
@@ -4193,7 +5515,6 @@ class LIB_API PlayerStatus {
         ~PlayerStatus() = default;
 
     public:
-        
         inline PlayerStatus& state(const uint8_t &v) noexcept {
             m_state = v;
             return *this;
@@ -4201,7 +5522,6 @@ class LIB_API PlayerStatus {
         inline uint8_t state() const noexcept {
             return m_state;
         }
-        
         inline PlayerStatus& numberOfEntries(const uint32_t &v) noexcept {
             m_numberOfEntries = v;
             return *this;
@@ -4209,7 +5529,6 @@ class LIB_API PlayerStatus {
         inline uint32_t numberOfEntries() const noexcept {
             return m_numberOfEntries;
         }
-        
         inline PlayerStatus& currentEntryForPlayback(const uint32_t &v) noexcept {
             m_currentEntryForPlayback = v;
             return *this;
@@ -4217,19 +5536,34 @@ class LIB_API PlayerStatus {
         inline uint32_t currentEntryForPlayback() const noexcept {
             return m_currentEntryForPlayback;
         }
-        
 
     public:
         template<class Visitor>
+        inline void accept(uint32_t fieldId, Visitor &visitor) {
+            (void)fieldId;
+            (void)visitor;
+//            visitor.preVisit(ID(), ShortName(), LongName());
+            if (1 == fieldId) {
+                doVisit(1, std::move("uint8_t"s), std::move("state"s), m_state, visitor);
+                return;
+            }
+            if (2 == fieldId) {
+                doVisit(2, std::move("uint32_t"s), std::move("numberOfEntries"s), m_numberOfEntries, visitor);
+                return;
+            }
+            if (3 == fieldId) {
+                doVisit(3, std::move("uint32_t"s), std::move("currentEntryForPlayback"s), m_currentEntryForPlayback, visitor);
+                return;
+            }
+//            visitor.postVisit();
+        }
+
+        template<class Visitor>
         inline void accept(Visitor &visitor) {
             visitor.preVisit(ID(), ShortName(), LongName());
-            
             doVisit(1, std::move("uint8_t"s), std::move("state"s), m_state, visitor);
-            
             doVisit(2, std::move("uint32_t"s), std::move("numberOfEntries"s), m_numberOfEntries, visitor);
-            
             doVisit(3, std::move("uint32_t"s), std::move("currentEntryForPlayback"s), m_currentEntryForPlayback, visitor);
-            
             visitor.postVisit();
         }
 
@@ -4237,24 +5571,16 @@ class LIB_API PlayerStatus {
         inline void accept(PreVisitor &&preVisit, Visitor &&visit, PostVisitor &&postVisit) {
             (void)visit; // Prevent warnings from empty messages.
             std::forward<PreVisitor>(preVisit)(ID(), ShortName(), LongName());
-            
             doTripletForwardVisit(1, std::move("uint8_t"s), std::move("state"s), m_state, preVisit, visit, postVisit);
-            
             doTripletForwardVisit(2, std::move("uint32_t"s), std::move("numberOfEntries"s), m_numberOfEntries, preVisit, visit, postVisit);
-            
             doTripletForwardVisit(3, std::move("uint32_t"s), std::move("currentEntryForPlayback"s), m_currentEntryForPlayback, preVisit, visit, postVisit);
-            
             std::forward<PostVisitor>(postVisit)();
         }
 
     private:
-        
         uint8_t m_state{ 0 }; // field identifier = 1.
-        
         uint32_t m_numberOfEntries{ 0 }; // field identifier = 2.
-        
         uint32_t m_currentEntryForPlayback{ 0 }; // field identifier = 3.
-        
 };
 }}
 
@@ -4268,10 +5594,188 @@ struct isTripletForwardVisitable<cluon::data::PlayerStatus> {
 };
 #endif
 
+
+/*
+ * THIS IS AN AUTO-GENERATED FILE. DO NOT MODIFY AS CHANGES MIGHT BE OVERWRITTEN!
+ */
+
+#ifndef VISITABLE_TYPE_TRAIT
+#define VISITABLE_TYPE_TRAIT
+#include <cstdint>
+#include <string>
+#include <utility>
+
+template<bool b>
+struct visitorSelector {
+    template<typename T, class Visitor>
+    static void impl(uint32_t fieldIdentifier, std::string &&typeName, std::string &&name, T &value, Visitor &visitor) {
+        visitor.visit(fieldIdentifier, std::move(typeName), std::move(name), value);
+    }
+};
+
+template<>
+struct visitorSelector<true> {
+    template<typename T, class Visitor>
+    static void impl(uint32_t fieldIdentifier, std::string &&typeName, std::string &&name, T &value, Visitor &visitor) {
+        visitor.visit(fieldIdentifier, std::move(typeName), std::move(name), value);
+    }
+};
+
+template<typename T>
+struct isVisitable {
+    static const bool value = false;
+};
+
+template<typename T, class Visitor>
+void doVisit(uint32_t fieldIdentifier, std::string &&typeName, std::string &&name, T &value, Visitor &visitor) {
+    visitorSelector<isVisitable<T>::value >::impl(fieldIdentifier, std::move(typeName), std::move(name), value, visitor);
+}
+#endif
+
+#ifndef TRIPLET_FORWARD_VISITABLE_TYPE_TRAIT
+#define TRIPLET_FORWARD_VISITABLE_TYPE_TRAIT
+#include <cstdint>
+#include <string>
+#include <utility>
+
+template<bool b>
+struct tripletForwardVisitorSelector {
+    template<typename T, class PreVisitor, class Visitor, class PostVisitor>
+    static void impl(uint32_t fieldIdentifier, std::string &&typeName, std::string &&name, T &value, PreVisitor &&preVisit, Visitor &&visit, PostVisitor &&postVisit) {
+        (void)preVisit;
+        (void)postVisit;
+        std::forward<Visitor>(visit)(fieldIdentifier, std::move(typeName), std::move(name), value);
+    }
+};
+
+template<>
+struct tripletForwardVisitorSelector<true> {
+    template<typename T, class PreVisitor, class Visitor, class PostVisitor>
+    static void impl(uint32_t fieldIdentifier, std::string &&typeName, std::string &&name, T &value, PreVisitor &&preVisit, Visitor &&visit, PostVisitor &&postVisit) {
+        (void)fieldIdentifier;
+        (void)typeName;
+        (void)name;
+        // Apply preVisit, visit, and postVisit on value.
+        value.accept(preVisit, visit, postVisit);
+    }
+};
+
+template<typename T>
+struct isTripletForwardVisitable {
+    static const bool value = false;
+};
+
+template< typename T, class PreVisitor, class Visitor, class PostVisitor>
+void doTripletForwardVisit(uint32_t fieldIdentifier, std::string &&typeName, std::string &&name, T &value, PreVisitor &&preVisit, Visitor &&visit, PostVisitor &&postVisit) {
+    tripletForwardVisitorSelector<isTripletForwardVisitable<T>::value >::impl(fieldIdentifier, std::move(typeName), std::move(name), value, std::move(preVisit), std::move(visit), std::move(postVisit)); // NOLINT
+}
+#endif
+
+
+#ifndef CLUON_DATA_RECORDERCOMMAND_HPP
+#define CLUON_DATA_RECORDERCOMMAND_HPP
+
+#ifdef WIN32
+    // Export symbols if compile flags "LIB_SHARED" and "LIB_EXPORTS" are set on Windows.
+    #ifdef LIB_SHARED
+        #ifdef LIB_EXPORTS
+            #define LIB_API __declspec(dllexport)
+        #else
+            #define LIB_API __declspec(dllimport)
+        #endif
+    #else
+        // Disable definition if linking statically.
+        #define LIB_API
+    #endif
+#else
+    // Disable definition for non-Win32 systems.
+    #define LIB_API
+#endif
+
+#include <string>
+#include <utility>
+namespace cluon { namespace data {
+using namespace std::string_literals; // NOLINT
+class LIB_API RecorderCommand {
+    private:
+        static constexpr const char* TheShortName = "RecorderCommand";
+        static constexpr const char* TheLongName = "cluon.data.RecorderCommand";
+
+    public:
+        inline static int32_t ID() {
+            return 11;
+        }
+        inline static const std::string ShortName() {
+            return TheShortName;
+        }
+        inline static const std::string LongName() {
+            return TheLongName;
+        }
+
+    public:
+        RecorderCommand() = default;
+        RecorderCommand(const RecorderCommand&) = default;
+        RecorderCommand& operator=(const RecorderCommand&) = default;
+        RecorderCommand(RecorderCommand&&) = default;
+        RecorderCommand& operator=(RecorderCommand&&) = default;
+        ~RecorderCommand() = default;
+
+    public:
+        inline RecorderCommand& command(const uint8_t &v) noexcept {
+            m_command = v;
+            return *this;
+        }
+        inline uint8_t command() const noexcept {
+            return m_command;
+        }
+
+    public:
+        template<class Visitor>
+        inline void accept(uint32_t fieldId, Visitor &visitor) {
+            (void)fieldId;
+            (void)visitor;
+//            visitor.preVisit(ID(), ShortName(), LongName());
+            if (1 == fieldId) {
+                doVisit(1, std::move("uint8_t"s), std::move("command"s), m_command, visitor);
+                return;
+            }
+//            visitor.postVisit();
+        }
+
+        template<class Visitor>
+        inline void accept(Visitor &visitor) {
+            visitor.preVisit(ID(), ShortName(), LongName());
+            doVisit(1, std::move("uint8_t"s), std::move("command"s), m_command, visitor);
+            visitor.postVisit();
+        }
+
+        template<class PreVisitor, class Visitor, class PostVisitor>
+        inline void accept(PreVisitor &&preVisit, Visitor &&visit, PostVisitor &&postVisit) {
+            (void)visit; // Prevent warnings from empty messages.
+            std::forward<PreVisitor>(preVisit)(ID(), ShortName(), LongName());
+            doTripletForwardVisit(1, std::move("uint8_t"s), std::move("command"s), m_command, preVisit, visit, postVisit);
+            std::forward<PostVisitor>(postVisit)();
+        }
+
+    private:
+        uint8_t m_command{ 0 }; // field identifier = 1.
+};
+}}
+
+template<>
+struct isVisitable<cluon::data::RecorderCommand> {
+    static const bool value = true;
+};
+template<>
+struct isTripletForwardVisitable<cluon::data::RecorderCommand> {
+    static const bool value = true;
+};
+#endif
+
 /*
  * MIT License
  *
- * Copyright (c) 2018  Christian Berger
+ * Copyright (c) 2018-2020  Christian Berger
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -4339,7 +5843,7 @@ inline std::string replaceAll(const std::string &str,
  * @return std::vector<std:string> where the given string is split along delimiter.
  */
 inline std::vector<std::string> split(const std::string &str,
-                                      const char &delimiter) noexcept {
+                               const char &delimiter) noexcept {
   std::vector<std::string> retVal{};
   std::string::size_type prev{0};
   for (std::string::size_type i{str.find_first_of(delimiter, prev)};
@@ -4348,9 +5852,15 @@ inline std::vector<std::string> split(const std::string &str,
     if (i != prev) {
       retVal.emplace_back(str.substr(prev, i - prev));
     }
+    else {
+      retVal.emplace_back("");
+    }
   }
-  if ((prev > 0) && (prev < str.size())) {
+  if (prev < str.size()) {
     retVal.emplace_back(str.substr(prev, str.size() - prev));
+  }
+  else if (prev > 0) {
+    retVal.emplace_back("");
   }
   return retVal;
 }
@@ -4359,20 +5869,11 @@ inline std::vector<std::string> split(const std::string &str,
 
 #endif
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_TIME_HPP
@@ -4406,7 +5907,7 @@ inline int64_t toMicroseconds(const cluon::data::TimeStamp &tp) noexcept {
 /**
  * @param AFTER First time stamp.
  * @param BEFORE Second time stamp.
- * @return Delta (BEFORE - AFTER) between two TimeStamps in microseconds.
+ * @return Delta (AFTER - BEFORE) between two TimeStamps in microseconds.
  */
 inline int64_t deltaInMicroseconds(const cluon::data::TimeStamp &AFTER, const cluon::data::TimeStamp &BEFORE) noexcept {
     return toMicroseconds(AFTER) - toMicroseconds(BEFORE);
@@ -4434,7 +5935,7 @@ inline cluon::data::TimeStamp convert(const std::chrono::system_clock::time_poin
 }
 
 /**
- * @return TimeStamp of now.
+ * @return TimeStamp of now from std::chrono::system_clock.
  */
 inline cluon::data::TimeStamp now() noexcept {
     return convert(std::chrono::system_clock::now());
@@ -4479,6 +5980,14 @@ inline cluon::data::TimeStamp now() noexcept {
     #include <sys/endian.h>
 #elif (defined(_WIN16) || defined(_WIN32) || defined(_WIN64))
     #if BYTE_ORDER == LITTLE_ENDIAN
+        // Add missing definitions for MinGW.
+        #ifndef htonll
+            #define htonll(x) ((1==htonl(1)) ? (x) : (((uint64_t)htonl((x) & 0xFFFFFFFFUL)) << 32) | htonl((uint32_t)((x) >> 32)))
+        #endif
+        #ifndef ntohll
+            #define ntohll(x) ((1==ntohl(1)) ? (x) : (((uint64_t)ntohl((x) & 0xFFFFFFFFUL)) << 32) | ntohl((uint32_t)((x) >> 32)))
+        #endif
+
         #define htobe16(x) htons(x)
         #define htole16(x) (x)
         #define be16toh(x) ntohs(x)
@@ -4524,18 +6033,9 @@ inline cluon::data::TimeStamp now() noexcept {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_CLUON_HPP
@@ -4597,6 +6097,16 @@ inline cluon::data::TimeStamp now() noexcept {
 namespace cluon {
 
 /**
+This class can be used to define hash keys.
+*/
+class UseUInt32ValueAsHashKey {
+   public:
+    inline std::size_t operator()(const uint32_t v) const noexcept {
+        return static_cast<std::size_t>(v);
+    }
+};
+
+/**
  * @return Map for command line parameters passed as --key=value into key->values.
  */
 std::map<std::string, std::string> getCommandlineArguments(int32_t argc, char **argv) noexcept;
@@ -4607,18 +6117,9 @@ std::map<std::string, std::string> getCommandlineArguments(int32_t argc, char **
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_METAMESSAGE_HPP
@@ -4820,18 +6321,9 @@ class LIBCLUON_API MetaMessage {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_MESSAGEPARSER_HPP
@@ -4870,7 +6362,7 @@ message myMessage.SubName [id = 1] {
 
 cluon::MessageParser mp;
 auto retVal = mp.parse(std::string(spec));
-if (retVal.second == cluon::MessageParser::MessageParserErrorCodes::NO_ERROR) {
+if (retVal.second == cluon::MessageParser::MessageParserErrorCodes::NO_MESSAGEPARSER_ERROR) {
     auto listOfMessages = retVal.first;
     for (auto message : listOfMessages) {
         message.accept([](const cluon::MetaMessage &mm){ std::cout << "Message name = " << mm.messageName() <<
@@ -4881,7 +6373,7 @@ std::endl; });
 */
 class LIBCLUON_API MessageParser {
    public:
-    enum MessageParserErrorCodes : uint8_t { NO_ERROR = 0, SYNTAX_ERROR = 1, DUPLICATE_IDENTIFIERS = 2 };
+    enum MessageParserErrorCodes : uint8_t { NO_MESSAGEPARSER_ERROR = 0, SYNTAX_ERROR = 1, DUPLICATE_IDENTIFIERS = 2 };
 
    private:
     MessageParser(const MessageParser &) = delete;
@@ -4897,7 +6389,7 @@ class LIBCLUON_API MessageParser {
      *
      * @param input Message specification.
      * @return Pair: List of cluon::MetaMessages describing the specified messages and error code:
-     *         NO_ERROR: The given specification could be parsed successfully (list moght be non-empty).
+     *         NO_MESSAGEPARSER_ERROR: The given specification could be parsed successfully (list moght be non-empty).
      *         SYNTAX_ERROR: The given specification could not be parsed successfully (list is empty).
      *         DUPLICATE_IDENTIFIERS: The given specification contains ambiguous names or identifiers (list is empty).
      */
@@ -4907,20 +6399,11 @@ class LIBCLUON_API MessageParser {
 
 #endif
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_TERMINATEHANDLER_HPP
@@ -4966,20 +6449,11 @@ class LIBCLUON_API TerminateHandler {
 
 #endif
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_NOTIFYINGPIPELINE_HPP
@@ -5093,20 +6567,34 @@ class LIBCLUON_API NotifyingPipeline {
 
 #endif
 /*
+ * Copyright (C) 2019  Christian Berger
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
+#ifndef CLUON_IPV4TOOLS_HPP
+#define CLUON_IPV4TOOLS_HPP
+
+#include <string>
+
+namespace cluon {
+
+/**
+ * @return IPv4-formatted string for the given hostname or the empty string.
+ */
+std::string getIPv4FromHostname(const std::string &hostname) noexcept;
+
+} // namespace cluon
+
+#endif
+/*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_UDPPACKETSIZECONSTRAINTS_H
@@ -5127,18 +6615,9 @@ namespace cluon {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_UDPSENDER_HPP
@@ -5231,18 +6710,9 @@ class LIBCLUON_API UDPSender {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_UDPRECEIVER_HPP
@@ -5376,20 +6846,11 @@ class LIBCLUON_API UDPReceiver {
 
 #endif
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_TCPCONNECTION_HPP
@@ -5531,6 +6992,7 @@ class LIBCLUON_API TCPConnection {
    private:
     mutable std::mutex m_socketMutex{};
     int32_t m_socket{-1};
+    bool m_cleanup{true};//if not created from TCPServer,call WSACleanup
     struct sockaddr_in m_address {};
 
     std::atomic<bool> m_readFromSocketThreadRunning{false};
@@ -5555,20 +7017,11 @@ class LIBCLUON_API TCPConnection {
 
 #endif
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_TCPSERVER_HPP
@@ -5643,18 +7096,9 @@ class LIBCLUON_API TCPServer {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_PROTOCONSTANTS_HPP
@@ -5676,18 +7120,9 @@ namespace cluon {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_TOPROTOVISITOR_HPP
@@ -5815,18 +7250,9 @@ class LIBCLUON_API ToProtoVisitor {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_FROMPROTOVISITOR_HPP
@@ -5834,11 +7260,14 @@ class LIBCLUON_API ToProtoVisitor {
 
 //#include "cluon/ProtoConstants.hpp"
 //#include "cluon/cluon.hpp"
+//#include "cluon/any/any.hpp"
 
 #include <cstdint>
-#include <map>
+#include <cstddef>
+#include <array>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace cluon {
@@ -5846,59 +7275,6 @@ namespace cluon {
 This class decodes a given message from Proto format.
 */
 class LIBCLUON_API FromProtoVisitor {
-    /**
-     * This class represents an entry in a Proto payload stream.
-     */
-    class ProtoKeyValue {
-       private:
-        ProtoKeyValue(ProtoKeyValue &&) = delete;
-        ProtoKeyValue &operator=(const ProtoKeyValue &) = delete;
-
-       public:
-        ProtoKeyValue() noexcept;
-        ProtoKeyValue(const ProtoKeyValue &) = default; // LCOV_EXCL_LINE
-        ProtoKeyValue &operator=(ProtoKeyValue &&) = default;
-        ~ProtoKeyValue()                           = default;
-
-        /**
-         * Constructor to pre-allocate the vector<char> for length-delimited types.
-         *
-         * @param key Proto key.
-         * @param type Proto type.
-         * @param length Length of the contained value.
-         */
-        ProtoKeyValue(uint32_t key, ProtoConstants type, uint64_t length) noexcept;
-
-        /**
-         * Constructor for cases when a VARINT value is encoded.
-         *
-         * @param key Proto key.
-         * @param value Actual VarInt value.
-         */
-        ProtoKeyValue(uint32_t key, uint64_t value) noexcept;
-
-        uint32_t key() const noexcept;
-        ProtoConstants type() const noexcept;
-        uint64_t length() const noexcept;
-
-        uint64_t valueAsVarInt() const noexcept;
-        float valueAsFloat() const noexcept;
-        double valueAsDouble() const noexcept;
-        std::string valueAsString() const noexcept;
-
-        /**
-         * @return Raw value as reference.
-         */
-        std::vector<char> &rawBuffer() noexcept;
-
-       private:
-        uint32_t m_key{0};
-        ProtoConstants m_type{ProtoConstants::VARINT};
-        uint64_t m_length{0};
-        std::vector<char> m_value{};
-        uint64_t m_varIntValue{0};
-    };
-
    private:
     FromProtoVisitor(const FromProtoVisitor &) = delete;
     FromProtoVisitor(FromProtoVisitor &&)      = delete;
@@ -5940,19 +7316,79 @@ class LIBCLUON_API FromProtoVisitor {
     void visit(uint32_t id, std::string &&typeName, std::string &&name, std::string &v) noexcept;
 
     template <typename T>
-    void visit(uint32_t &id, std::string &&typeName, std::string &&name, T &value) noexcept {
+    void visit(uint32_t &id, std::string &&typeName, std::string &&name, T &v) noexcept {
         (void)typeName;
         (void)name;
 
-        if (0 < m_mapOfKeyValues.count(id)) {
-            const std::string s{m_mapOfKeyValues[id].valueAsString()};
-
-            std::stringstream sstr{s};
+        if (m_callToDecodeFromWithDirectVisit) {
+            std::stringstream sstr{std::move(std::string(m_stringValue.data(), static_cast<std::size_t>(m_value)))};
             cluon::FromProtoVisitor nestedProtoDecoder;
-            nestedProtoDecoder.decodeFrom(sstr);
-
-            value.accept(nestedProtoDecoder);
+            nestedProtoDecoder.decodeFrom(sstr, v);
         }
+        else if (0 < m_mapOfKeyValues.count(id)) {
+            try {
+                std::stringstream sstr{linb::any_cast<std::string>(m_mapOfKeyValues[id])};
+                cluon::FromProtoVisitor nestedProtoDecoder;
+                nestedProtoDecoder.decodeFrom(sstr);
+                v.accept(nestedProtoDecoder);
+            } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+            }
+        }
+    }
+
+   public:
+    /**
+     * This method decodes a given istream into corresponding fields of v.
+     *
+     * @param in istream to decode.
+     * @param v Data structure to receive the decoded values.
+     */
+    template<typename T>
+    void decodeFrom(std::istream &in, T &v) noexcept {
+        m_callToDecodeFromWithDirectVisit = true;
+        while (in.good()) {
+            // First stage: Read keyFieldType (encoded as VarInt).
+            if (0 < fromVarInt(in, m_keyFieldType)) {
+                // Succeeded to read keyFieldType entry; extract information.
+                m_protoType = static_cast<ProtoConstants>(m_keyFieldType & 0x7);
+                m_fieldId = static_cast<uint32_t>(m_keyFieldType >> 3);
+                switch (m_protoType) {
+                    case ProtoConstants::VARINT:
+                    {
+                        // Directly decode VarInt value.
+                        fromVarInt(in, m_value);
+                        v.accept(m_fieldId, *this);
+                    }
+                    break;
+                    case ProtoConstants::EIGHT_BYTES:
+                    {
+                        readBytesFromStream(in, sizeof(double), m_doubleValue.buffer.data());
+                        m_doubleValue.uint64Value = le64toh(m_doubleValue.uint64Value);
+                        v.accept(m_fieldId, *this);
+                    }
+                    break;
+                    case ProtoConstants::FOUR_BYTES:
+                    {
+                        readBytesFromStream(in, sizeof(float), m_floatValue.buffer.data());
+                        m_floatValue.uint32Value = le32toh(m_floatValue.uint32Value);
+                        v.accept(m_fieldId, *this);
+                    }
+                    break;
+                    case ProtoConstants::LENGTH_DELIMITED:
+                    {
+                        fromVarInt(in, m_value);
+                        const std::size_t BYTES_TO_READ_FROM_STREAM{static_cast<std::size_t>(m_value)};
+                        if (m_stringValue.capacity() < BYTES_TO_READ_FROM_STREAM) {
+                            m_stringValue.reserve(BYTES_TO_READ_FROM_STREAM);
+                        }
+                        readBytesFromStream(in, BYTES_TO_READ_FROM_STREAM, m_stringValue.data());
+                        v.accept(m_fieldId, *this);
+                    }
+                    break;
+                }
+            }
+        }
+        m_callToDecodeFromWithDirectVisit = false;
     }
 
    private:
@@ -5963,11 +7399,38 @@ class LIBCLUON_API FromProtoVisitor {
 
     std::size_t fromVarInt(std::istream &in, uint64_t &value) noexcept;
 
-    void readBytesFromStream(std::istream &in, std::size_t bytesToReadFromStream, std::vector<char> &buffer) noexcept;
+    void readBytesFromStream(std::istream &in, std::size_t bytesToReadFromStream, char *buffer) noexcept;
 
    private:
-    std::stringstream m_buffer{""};
-    std::map<uint32_t, ProtoKeyValue> m_mapOfKeyValues{};
+    // This Boolean flag indicates whether we consecutively decode from istream
+    // and inject the decoded values directly into the receiving data structure.
+    bool m_callToDecodeFromWithDirectVisit{false};
+    std::unordered_map<uint32_t, linb::any, UseUInt32ValueAsHashKey> m_mapOfKeyValues{};
+
+   private:
+    // Fields necessary to decode from an istream.
+    uint64_t m_value{0};
+
+    // Union buffer for double values.
+    union DoubleValue {
+        std::array<char, sizeof(double)> buffer;
+        uint64_t uint64Value;
+        double doubleValue{0};
+    } m_doubleValue;
+
+    // Union buffer for float values.
+    union FloatValue {
+        std::array<char, sizeof(float)> buffer;
+        uint32_t uint32Value;
+        float floatValue{0};
+    } m_floatValue;
+
+    // Buffer for strings.
+    std::vector<char> m_stringValue;
+
+    uint64_t m_keyFieldType{0};
+    ProtoConstants m_protoType{ProtoConstants::VARINT};
+    uint32_t m_fieldId{0};
 };
 } // namespace cluon
 
@@ -5975,18 +7438,9 @@ class LIBCLUON_API FromProtoVisitor {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_FROMLCMVISITOR_HPP
@@ -6077,18 +7531,9 @@ class LIBCLUON_API FromLCMVisitor {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_MSGPACKCONSTANTS_HPP
@@ -6136,18 +7581,9 @@ namespace cluon {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_FROMMSGPACKVISITOR_HPP
@@ -6264,20 +7700,11 @@ class LIBCLUON_API FromMsgPackVisitor {
 
 #endif
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_JSONCONSTANTS_HPP
@@ -6300,20 +7727,11 @@ namespace cluon {
 
 #endif
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_FROMJSONVISITOR_HPP
@@ -6437,18 +7855,9 @@ class LIBCLUON_API FromJSONVisitor {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_TOJSONVISITOR_HPP
@@ -6553,18 +7962,9 @@ class LIBCLUON_API ToJSONVisitor {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_TOCSVVISITOR_HPP
@@ -6664,14 +8064,16 @@ class LIBCLUON_API ToCSVVisitor {
     void visit(uint32_t &id, std::string &&typeName, std::string &&name, T &value) noexcept {
         (void)id;
         (void)typeName;
-        constexpr bool IS_NESTED{true};
-        ToCSVVisitor csvVisitor(name, m_delimiter, m_withHeader, IS_NESTED);
-        value.accept(csvVisitor);
+        if ((0 == m_mask.count(id)) || m_mask[id]) {
+            constexpr bool IS_NESTED{true};
+            ToCSVVisitor csvVisitor(name, m_delimiter, m_withHeader, IS_NESTED);
+            value.accept(csvVisitor);
 
-        if (m_fillHeader) {
-            m_bufferHeader << csvVisitor.m_bufferHeader.str();
+            if (m_fillHeader) {
+                m_bufferHeader << csvVisitor.m_bufferHeader.str();
+            }
+            m_bufferValues << csvVisitor.m_bufferValues.str();
         }
-        m_bufferValues << csvVisitor.m_bufferValues.str();
     }
 
    private:
@@ -6690,18 +8092,9 @@ class LIBCLUON_API ToCSVVisitor {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_TOLCMVISITOR_HPP
@@ -6791,18 +8184,9 @@ class LIBCLUON_API ToLCMVisitor {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_TOODVDVISITOR_HPP
@@ -6833,7 +8217,7 @@ std::cout << generatedMessageSpecification << std::endl;
 
 cluon::MessageParser mp;
 auto retVal = mp.parse(generatedMessageSpecification);
-std::cout << (cluon::MessageParser::MessageParserErrorCodes::NO_ERROR == retVal.second);
+std::cout << (cluon::MessageParser::MessageParserErrorCodes::NO_MESSAGEPARSER_ERROR == retVal.second);
 \endcode
 */
 class LIBCLUON_API ToODVDVisitor {
@@ -6896,18 +8280,9 @@ class LIBCLUON_API ToODVDVisitor {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_TOMSGPACKVISITOR_HPP
@@ -6990,20 +8365,11 @@ class LIBCLUON_API ToMsgPackVisitor {
 
 #endif
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_ENVELOPE_HPP
@@ -7111,8 +8477,7 @@ inline std::pair<bool, cluon::data::Envelope> extractEnvelope(std::istream &in) 
                 if (retVal) {
                     std::stringstream sstr(std::string(buffer.begin(), buffer.begin() + static_cast<std::streamsize>(LENGTH)));
                     cluon::FromProtoVisitor protoDecoder;
-                    protoDecoder.decodeFrom(sstr);
-                    env.accept(protoDecoder);
+                    protoDecoder.decodeFrom(sstr, env);
                 }
             }
         }
@@ -7142,18 +8507,9 @@ inline T extractMessage(cluon::data::Envelope &&envelope) noexcept {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_ENVELOPECONVERTER_HPP
@@ -7235,7 +8591,9 @@ class LIBCLUON_API EnvelopeConverter {
     std::string getProtoEncodedEnvelopeFromJSON(const std::string &json, int32_t messageIdentifier, uint32_t senderStamp) noexcept;
 
    private:
+// clang-format off
     std::string getProtoEncodedEnvelopeFromJSON(const std::string &json, int32_t messageIdentifier, uint32_t senderStamp, cluon::data::TimeStamp sampleTimeStamp) noexcept;
+// clang-format on
 
    private:
     std::vector<cluon::MetaMessage> m_listOfMetaMessages{};
@@ -7246,18 +8604,9 @@ class LIBCLUON_API EnvelopeConverter {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_GENERICMESSAGE_HPP
@@ -7270,8 +8619,8 @@ class LIBCLUON_API EnvelopeConverter {
 //#include "cluon/cluonDataStructures.hpp"
 
 #include <cstdint>
-#include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace cluon {
@@ -7313,7 +8662,7 @@ message MyMessage [id = 123] {
 
 cluon::MessageParser mp;
 auto retVal = mp.parse(std::string(messageSpecification));
-if (cluon::MessageParser::MessageParserErrorCodes::NO_ERROR == retVal.second) {
+if (cluon::MessageParser::MessageParserErrorCodes::NO_MESSAGEPARSER_ERROR == retVal.second) {
     cluon::GenericMessage gm;
     auto listOfMetaMessages = retVal.first;
     gm.createFrom(listOfMetaMessages[0], listOfMetaMessages);
@@ -7408,7 +8757,7 @@ message MyMessage [id = 123] {
 
 cluon::MessageParser mp;
 auto retVal = mp.parse(std::string(messageSpecification));
-if (cluon::MessageParser::MessageParserErrorCodes::NO_ERROR == retVal.second) {
+if (cluon::MessageParser::MessageParserErrorCodes::NO_MESSAGEPARSER_ERROR == retVal.second) {
     cluon::GenericMessage gm;
     auto listOfMetaMessages = retVal.first;
     gm.createFrom(listOfMetaMessages[0], listOfMetaMessages);
@@ -7474,11 +8823,11 @@ class LIBCLUON_API GenericMessage {
         /**
          * @return Intermediate data representation for this GenericMessage.
          */
-        std::map<uint32_t, linb::any> intermediateDataRepresentation() const noexcept;
+        std::unordered_map<uint32_t, linb::any, UseUInt32ValueAsHashKey> intermediateDataRepresentation() const noexcept;
 
        private:
         MetaMessage m_metaMessage{};
-        std::map<uint32_t, linb::any> m_intermediateDataRepresentation;
+        std::unordered_map<uint32_t, linb::any, UseUInt32ValueAsHashKey> m_intermediateDataRepresentation;
     };
 
    private:
@@ -7556,104 +8905,28 @@ class LIBCLUON_API GenericMessage {
    public:
     /**
      * This method allows other instances to visit this GenericMessage for
+     * post-processing the contained data on an individual field basis.
+     *
+     * @param fieldId Identifier for the field to visit.
+     * @param visitor Instance of the visitor visiting this GenericMessage.
+     */
+    template<class Visitor>
+    inline void accept(uint32_t fieldId, Visitor &visitor) {
+        const bool VISIT_ALL{false};
+        accept<Visitor>(fieldId, visitor, VISIT_ALL);
+    }
+
+    /**
+     * This method allows other instances to visit this GenericMessage for
      * post-processing the contained data.
      *
      * @param visitor Instance of the visitor visiting this GenericMessage.
      */
     template <class Visitor>
     void accept(Visitor &visitor) {
-        visitor.preVisit(m_metaMessage.messageIdentifier(), m_metaMessage.messageName(), m_longName);
-
-        for (const auto &f : m_metaMessage.listOfMetaFields()) {
-            if (f.fieldDataType() == MetaMessage::MetaField::BOOL_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
-                try {
-                    auto &v = linb::any_cast<bool &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
-                    doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
-                } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
-                }
-            } else if (f.fieldDataType() == MetaMessage::MetaField::CHAR_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
-                try {
-                    auto &v = linb::any_cast<char &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
-                    doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
-                } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
-                }
-            } else if (f.fieldDataType() == MetaMessage::MetaField::UINT8_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
-                try {
-                    auto &v = linb::any_cast<uint8_t &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
-                    doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
-                } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
-                }
-            } else if (f.fieldDataType() == MetaMessage::MetaField::INT8_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
-                try {
-                    auto &v = linb::any_cast<int8_t &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
-                    doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
-                } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
-                }
-            } else if (f.fieldDataType() == MetaMessage::MetaField::UINT16_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
-                try {
-                    auto &v = linb::any_cast<uint16_t &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
-                    doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
-                } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
-                }
-            } else if (f.fieldDataType() == MetaMessage::MetaField::INT16_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
-                try {
-                    auto &v = linb::any_cast<int16_t &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
-                    doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
-                } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
-                }
-            } else if (f.fieldDataType() == MetaMessage::MetaField::UINT32_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
-                try {
-                    auto &v = linb::any_cast<uint32_t &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
-                    doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
-                } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
-                }
-            } else if (f.fieldDataType() == MetaMessage::MetaField::INT32_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
-                try {
-                    auto &v = linb::any_cast<int32_t &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
-                    doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
-                } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
-                }
-            } else if (f.fieldDataType() == MetaMessage::MetaField::UINT64_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
-                try {
-                    auto &v = linb::any_cast<uint64_t &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
-                    doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
-                } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
-                }
-            } else if (f.fieldDataType() == MetaMessage::MetaField::INT64_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
-                try {
-                    auto &v = linb::any_cast<int64_t &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
-                    doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
-                } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
-                }
-            } else if (f.fieldDataType() == MetaMessage::MetaField::FLOAT_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
-                try {
-                    auto &v = linb::any_cast<float &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
-                    doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
-                } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
-                }
-            } else if (f.fieldDataType() == MetaMessage::MetaField::DOUBLE_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
-                try {
-                    auto &v = linb::any_cast<double &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
-                    doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
-                } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
-                }
-            } else if (((f.fieldDataType() == MetaMessage::MetaField::STRING_T) || (f.fieldDataType() == MetaMessage::MetaField::BYTES_T))
-                       && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
-                try {
-                    auto &v = linb::any_cast<std::string &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
-                    doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
-                } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
-                }
-            } else if (f.fieldDataType() == MetaMessage::MetaField::MESSAGE_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
-                try {
-                    auto &v = linb::any_cast<cluon::GenericMessage &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
-                    doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
-                } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
-                }
-            }
-        }
-
-        visitor.postVisit();
+        const uint32_t FIELD_ID{0};
+        const bool VISIT_ALL{true};
+        accept<Visitor>(FIELD_ID, visitor, VISIT_ALL);
     }
 
     /**
@@ -7761,11 +9034,114 @@ class LIBCLUON_API GenericMessage {
     }
 
    private:
+    template<class Visitor>
+    inline void accept(uint32_t fieldId, Visitor &visitor, bool visitAll) {
+        visitor.preVisit(ID(), ShortName(), LongName());
+
+        for (const auto &f : m_metaMessage.listOfMetaFields()) {
+            if (visitAll || (fieldId == f.fieldIdentifier())) {
+                if (f.fieldDataType() == MetaMessage::MetaField::BOOL_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
+                    try {
+                        auto &v = linb::any_cast<bool &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
+                        doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
+                    } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+                    }
+                } else if (f.fieldDataType() == MetaMessage::MetaField::CHAR_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
+                    try {
+                        auto &v = linb::any_cast<char &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
+                        doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
+                    } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+                    }
+                } else if (f.fieldDataType() == MetaMessage::MetaField::UINT8_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
+                    try {
+                        auto &v = linb::any_cast<uint8_t &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
+                        doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
+                    } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+                    }
+                } else if (f.fieldDataType() == MetaMessage::MetaField::INT8_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
+                    try {
+                        auto &v = linb::any_cast<int8_t &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
+                        doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
+                    } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+                    }
+                } else if (f.fieldDataType() == MetaMessage::MetaField::UINT16_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
+                    try {
+                        auto &v = linb::any_cast<uint16_t &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
+                        doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
+                    } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+                    }
+                } else if (f.fieldDataType() == MetaMessage::MetaField::INT16_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
+                    try {
+                        auto &v = linb::any_cast<int16_t &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
+                        doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
+                    } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+                    }
+                } else if (f.fieldDataType() == MetaMessage::MetaField::UINT32_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
+                    try {
+                        auto &v = linb::any_cast<uint32_t &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
+                        doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
+                    } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+                    }
+                } else if (f.fieldDataType() == MetaMessage::MetaField::INT32_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
+                    try {
+                        auto &v = linb::any_cast<int32_t &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
+                        doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
+                    } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+                    }
+                } else if (f.fieldDataType() == MetaMessage::MetaField::UINT64_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
+                    try {
+                        auto &v = linb::any_cast<uint64_t &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
+                        doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
+                    } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+                    }
+                } else if (f.fieldDataType() == MetaMessage::MetaField::INT64_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
+                    try {
+                        auto &v = linb::any_cast<int64_t &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
+                        doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
+                    } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+                    }
+                } else if (f.fieldDataType() == MetaMessage::MetaField::FLOAT_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
+                    try {
+                        auto &v = linb::any_cast<float &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
+                        doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
+                    } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+                    }
+                } else if (f.fieldDataType() == MetaMessage::MetaField::DOUBLE_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
+                    try {
+                        auto &v = linb::any_cast<double &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
+                        doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
+                    } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+                    }
+                } else if (((f.fieldDataType() == MetaMessage::MetaField::STRING_T) || (f.fieldDataType() == MetaMessage::MetaField::BYTES_T))
+                           && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
+                    try {
+                        auto &v = linb::any_cast<std::string &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
+                        doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
+                    } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+                    }
+                } else if (f.fieldDataType() == MetaMessage::MetaField::MESSAGE_T && (0 < m_intermediateDataRepresentation.count(f.fieldIdentifier()))) {
+                    try {
+                        auto &v = linb::any_cast<cluon::GenericMessage &>(m_intermediateDataRepresentation[f.fieldIdentifier()]);
+                        doVisit(f.fieldIdentifier(), std::move(f.fieldDataTypeName()), std::move(f.fieldName()), v, visitor);
+                    } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+                    }
+                }
+                // End processing in case of visiting specific fields.
+                if (!visitAll && (fieldId == f.fieldIdentifier())) {
+                  break;
+                }
+            }
+        }
+
+        visitor.postVisit();
+    }
+
+   private:
     MetaMessage m_metaMessage{};
     std::vector<MetaMessage> m_scopeOfMetaMessages{};
-    std::map<std::string, MetaMessage> m_mapForScopeOfMetaMessages{};
+    std::unordered_map<std::string, MetaMessage> m_mapForScopeOfMetaMessages{};
     std::string m_longName{""};
-    std::map<uint32_t, linb::any> m_intermediateDataRepresentation;
+    std::unordered_map<uint32_t, linb::any, UseUInt32ValueAsHashKey> m_intermediateDataRepresentation;
 };
 } // namespace cluon
 
@@ -7779,20 +9155,11 @@ struct isTripletForwardVisitable<cluon::GenericMessage> {
 };
 #endif
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_LCMTOGENERICMESSAGE_HPP
@@ -7846,20 +9213,11 @@ class LIBCLUON_API LCMToGenericMessage {
 } // namespace cluon
 #endif
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_OD4SESSION_HPP
@@ -7875,10 +9233,10 @@ class LIBCLUON_API LCMToGenericMessage {
 #include <chrono>
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 namespace cluon {
@@ -8020,26 +9378,17 @@ class LIBCLUON_API OD4Session {
     std::function<void(cluon::data::Envelope &&envelope)> m_delegate{nullptr};
 
     std::mutex m_mapOfDataTriggeredDelegatesMutex{};
-    std::map<int32_t, std::function<void(cluon::data::Envelope &&envelope)>> m_mapOfDataTriggeredDelegates{};
+    std::unordered_map<int32_t, std::function<void(cluon::data::Envelope &&envelope)>, UseUInt32ValueAsHashKey> m_mapOfDataTriggeredDelegates{};
 };
 
 } // namespace cluon
 #endif
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_PLAYER_HPP
@@ -8246,26 +9595,18 @@ class LIBCLUON_API Player {
 
 #endif
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_SHAREDMEMORY_HPP
 #define CLUON_SHAREDMEMORY_HPP
 
 //#include "cluon/cluon.hpp"
+//#include "cluon/cluonDataStructures.hpp"
 
 // clang-format off
 #ifdef WIN32
@@ -8280,6 +9621,7 @@ class LIBCLUON_API Player {
 #include <cstdint>
 #include <atomic>
 #include <string>
+#include <utility>
 
 namespace cluon {
 
@@ -8303,6 +9645,11 @@ class LIBCLUON_API SharedMemory {
     ~SharedMemory() noexcept;
 
     /**
+     * @return true when this shared memory area is locked.
+     */
+    bool isLocked() const noexcept;
+
+    /**
      * This method locks the shared memory area.
      */
     void lock() noexcept;
@@ -8321,6 +9668,27 @@ class LIBCLUON_API SharedMemory {
      * This method notifies all threads waiting on the shared condition.
      */
     void notifyAll() noexcept;
+
+    /**
+     * This method sets the time stamp that can be used to
+     * express the sample time stamp of the data in residing
+     * in the shared memory.
+     *
+     * This method is only allowed when the shared memory is locked.
+     *
+     * @param ts TimeStamp.
+     * @return true if the timestamp could set; false if the shared memory was not locked.
+     */
+    bool setTimeStamp(const cluon::data::TimeStamp &ts) noexcept;
+
+    /**
+     * This method returns the sample time stamp.
+     *
+     * This method is only allowed when the shared memory is locked.
+     *
+     * @return (true, sample time stamp) or (false, 0) in case if the shared memory was not locked.
+     */
+    std::pair<bool, cluon::data::TimeStamp> getTimeStamp() noexcept;
 
    public:
     /**
@@ -8372,18 +9740,22 @@ class LIBCLUON_API SharedMemory {
 
    private:
     std::string m_name{""};
+    std::string m_nameForTimeStamping{""};
     uint32_t m_size{0};
     char *m_sharedMemory{nullptr};
     char *m_userAccessibleSharedMemory{nullptr};
     bool m_hasOnlyAttachedToSharedMemory{false};
 
     std::atomic<bool> m_broken{false};
+    std::atomic<bool> m_isLocked{false};
 
 #ifdef WIN32
     HANDLE __conditionEvent{nullptr};
     HANDLE __mutex{nullptr};
     HANDLE __sharedMemory{nullptr};
 #else
+    int32_t m_fdForTimeStamping{-1};
+
     bool m_usePOSIX{true};
 
     // Member fields for POSIX-based shared memory.
@@ -8413,20 +9785,11 @@ class LIBCLUON_API SharedMemory {
 #ifndef BEGIN_HEADER_ONLY_IMPLEMENTATION
 #define BEGIN_HEADER_ONLY_IMPLEMENTATION
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "argh/argh.h"
@@ -8452,18 +9815,9 @@ inline std::map<std::string, std::string> getCommandlineArguments(int32_t argc, 
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/MetaMessage.hpp"
@@ -8562,18 +9916,9 @@ inline void MetaMessage::accept(const std::function<void(const MetaMessage &)> &
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/MessageParser.hpp"
@@ -8594,19 +9939,14 @@ namespace cluon {
 inline std::pair<std::vector<MetaMessage>, MessageParser::MessageParserErrorCodes> MessageParser::parse(const std::string &input) {
     const char *grammarMessageSpecificationLanguage = R"(
         MESSAGES_SPECIFICATION      <- PACKAGE_DECLARATION? MESSAGE_DECLARATION*
-        PACKAGE_DECLARATION         <- 'package' PACKAGE_IDENTIFIER ';'
-        PACKAGE_IDENTIFIER          <- < IDENTIFIER ('.' IDENTIFIER)* >
+        PACKAGE_DECLARATION         <- 'package' PACKAGE_NAME ';'
+        PACKAGE_NAME                <- < NAME ('.' NAME)* >
 
-        MESSAGE_DECLARATION         <- 'message' MESSAGE_IDENTIFIER MESSAGE_OPTIONS '{' FIELD* '}'
-        MESSAGE_IDENTIFIER          <- < IDENTIFIER ('.' IDENTIFIER)* >
-        MESSAGE_OPTIONS             <- '[' 'id' '=' NATURAL_NUMBER ','? ']'
+        MESSAGE_DECLARATION         <- 'message' MESSAGE_NAME '[' IDENTIFIER ','? ']' '{' FIELD* '}'
+        MESSAGE_NAME                <- < NAME ('.' NAME)* >
 
-        FIELD                       <- PRIMITIVE_FIELD
-
-        PRIMITIVE_FIELD             <- PRIMITIVE_TYPE IDENTIFIER ('[' PRIMITIVE_FIELD_OPTIONS ']')? ';'
-        PRIMITIVE_FIELD_OPTIONS     <- PRIMITIVE_FIELD_DEFAULT? ','? NUMERICAL_FIELD_IDENTIFIER?
-        NUMERICAL_FIELD_IDENTIFIER  <- 'id' '=' NATURAL_NUMBER
-        PRIMITIVE_FIELD_DEFAULT     <- 'default' '=' (FLOAT_NUMBER / BOOL / CHARACTER / STRING)
+        FIELD                       <- PRIMITIVE_TYPE NAME ('[' (((DEFAULT / IDENTIFIER) ','?)+)? ']')? ';'
+        DEFAULT                     <- 'default' '=' (FLOAT_NUMBER / BOOL / CHARACTER / STRING)
         PRIMITIVE_TYPE              <- < 'bool' / 'float' / 'double' /
                                          'char' /
                                          'bytes' / 'string' /
@@ -8616,9 +9956,11 @@ inline std::pair<std::vector<MetaMessage>, MessageParser::MessageParserErrorCode
                                          'int64' / 'uint64' /
                                          MESSAGE_TYPE >
 
-        MESSAGE_TYPE                <- < IDENTIFIER ('.' IDENTIFIER)* >
+        MESSAGE_TYPE                <- < NAME ('.' NAME)* >
 
-        IDENTIFIER                  <- < [a-zA-Z][a-zA-Z0-9_]* >
+        IDENTIFIER                  <- 'id' '=' NATURAL_NUMBER
+
+        NAME                        <- < [a-zA-Z][a-zA-Z0-9_]* >
         DIGIT                       <- < [0-9] >
         NATURAL_NUMBER              <- < [1-9] DIGIT* >
         FLOAT_NUMBER                <- < ('+' / '-')? DIGIT DIGIT* (('.') DIGIT*)? >
@@ -8641,6 +9983,7 @@ inline std::pair<std::vector<MetaMessage>, MessageParser::MessageParserErrorCode
                                                                                       std::vector<int32_t> &numericalFieldIdentifiers) {
             bool retVal = true;
             // First, we need to visit the children of AST node MESSAGES_SPECIFICATION.
+
             if ("MESSAGES_SPECIFICATION" == ast.name) {
                 for (const auto &node : ast.nodes) {
                     retVal &= checkForUniqueFieldNames(*node, prefix, messageNames, fieldNames, numericalMessageIdentifiers, numericalFieldIdentifiers);
@@ -8686,12 +10029,12 @@ inline std::pair<std::vector<MetaMessage>, MessageParser::MessageParserErrorCode
                 retVal = true;
 
                 for (const auto &node : ast.nodes) {
-                    if ("MESSAGE_IDENTIFIER" == node->name) {
+                    if ("MESSAGE_NAME" == node->original_name) {
                         prefix = node->token;
                         messageNames.push_back(::stringtoolbox::trim(prefix));
-                    } else if ("NATURAL_NUMBER" == node->name) {
+                    } else if ("IDENTIFIER" == node->original_name) {
                         numericalMessageIdentifiers.push_back(std::stoi(node->token));
-                    } else if ("PRIMITIVE_FIELD" == node->name) {
+                    } else if ("FIELD" == node->original_name) {
                         retVal &= checkForUniqueFieldNames(*node, prefix, messageNames, fieldNames, numericalMessageIdentifiers, numericalFieldIdentifiers);
                     }
                 }
@@ -8731,26 +10074,18 @@ inline std::pair<std::vector<MetaMessage>, MessageParser::MessageParserErrorCode
                     }
                 }
             }
-            // Within AST node MESSAGE_DECLARATION, we have PRIMITIVE_FIELD from
+            // Within AST node MESSAGE_DECLARATION, we have FIELD from
             // which we need to extract the field "token".
-            if (ast.name == "PRIMITIVE_FIELD") {
-                // Extract the value of entry "IDENTIFIER".
-                auto nodeIdentifier = std::find_if(std::begin(ast.nodes), std::end(ast.nodes), [](auto a) { return (a->name == "IDENTIFIER"); });
-                if (nodeIdentifier != std::end(ast.nodes)) {
-                    fieldNames.push_back((*nodeIdentifier)->token);
+            if (ast.original_name == "FIELD") {
+                // Extract the value of entry "NAME".
+                auto nodeName = std::find_if(std::begin(ast.nodes), std::end(ast.nodes), [](auto a) { return (a->original_name == "NAME"); });
+                if (nodeName != std::end(ast.nodes)) {
+                    fieldNames.push_back((*nodeName)->token);
                 }
 
-                // Visit this node's children to check for duplicated numerical identifiers.
-                for (const auto &node : ast.nodes) {
-                    retVal &= checkForUniqueFieldNames(*node, prefix, messageNames, fieldNames, numericalMessageIdentifiers, numericalFieldIdentifiers);
-                }
-            }
-            // Within AST node PRIMITIVE_FIELD, we have PRIMITIVE_FIELD_OPTIONS from
-            // which we need to extract the field "token".
-            if (ast.name == "PRIMITIVE_FIELD_OPTIONS") {
                 // Extract the value of entry "IDENTIFIER".
                 auto nodeNumericalFieldIdentifier
-                    = std::find_if(std::begin(ast.nodes), std::end(ast.nodes), [](auto a) { return (a->name == "NATURAL_NUMBER"); });
+                    = std::find_if(std::begin(ast.nodes), std::end(ast.nodes), [](auto a) { return (a->original_name == "IDENTIFIER"); });
                 if (nodeNumericalFieldIdentifier != std::end(ast.nodes)) {
                     numericalFieldIdentifiers.push_back(std::stoi((*nodeNumericalFieldIdentifier)->token));
                 }
@@ -8770,47 +10105,37 @@ inline std::pair<std::vector<MetaMessage>, MessageParser::MessageParserErrorCode
                   mm.packageName(::stringtoolbox::trim(_packageName));
                   uint32_t fieldIdentifierCounter{0};
                   for (const auto &e : _node.nodes) {
-                      if ("MESSAGE_IDENTIFIER" == e->name) {
+                      if ("MESSAGE_NAME" == e->original_name) {
                           std::string _messageName = e->token;
                           mm.messageName(::stringtoolbox::trim(_messageName));
-                      } else if ("NATURAL_NUMBER" == e->name) {
+                      } else if ("IDENTIFIER" == e->original_name) {
                           mm.messageIdentifier(std::stoi(e->token));
-                      } else if ("PRIMITIVE_FIELD" == e->name) {
-                          std::string _fieldName;
-                          auto fieldName = std::find_if(std::begin(e->nodes), std::end(e->nodes), [](auto a) { return (a->name == "IDENTIFIER"); });
-                          if (fieldName != std::end(e->nodes)) {
-                              _fieldName = (*fieldName)->token;
-                          }
-
+                      } else if ("FIELD" == e->original_name) {
                           std::string _fieldDataType;
-                          auto fieldDataType = std::find_if(std::begin(e->nodes), std::end(e->nodes), [](auto a) { return (a->name == "PRIMITIVE_TYPE"); });
-                          if (fieldDataType != std::end(e->nodes)) {
-                              _fieldDataType = (*fieldDataType)->token;
-                          }
-
-                          fieldIdentifierCounter++; // Automatically count expected field identifiers in case of missing
-                                                    // field options.
-                          std::string _fieldIdentifier;
-                          auto fieldIdentifier = std::find_if(std::begin(e->nodes), std::end(e->nodes), [](auto a) { return (a->name == "NATURAL_NUMBER"); });
-                          if (fieldIdentifier != std::end(e->nodes)) {
-                              _fieldIdentifier = (*fieldIdentifier)->token;
-                          }
-
+                          std::string _fieldName;
                           std::string _fieldDefaultInitializerValue;
-                          auto primitiveFieldOptions
-                              = std::find_if(std::begin(e->nodes), std::end(e->nodes), [](auto a) { return (a->name == "PRIMITIVE_FIELD_OPTIONS"); });
-                          if (primitiveFieldOptions != std::end(e->nodes)) {
-                              for (const auto &f : (*primitiveFieldOptions)->nodes) {
-                                  if ("NATURAL_NUMBER" != f->name) {
-                                      if ("STRING" == f->name) {
-                                          _fieldDefaultInitializerValue = "\"" + f->token + "\""; // NOLINT
-                                      } else if ("CHARACTER" == f->name) {
-                                          _fieldDefaultInitializerValue = "'" + f->token + "'";
-                                      } else {
-                                          _fieldDefaultInitializerValue = f->token;
-                                      }
+                          std::string _fieldIdentifier;
+                          for (const auto &f : e->nodes) {
+                              if ("PRIMITIVE_TYPE" == f->original_name) {
+                                  _fieldDataType = f->token;
+                              } else if ("NAME" == f->original_name) {
+                                  _fieldName = f->token;
+                              } else if ("DEFAULT" == f->original_name) {
+                                  if ("STRING" == f->name) {
+                                      _fieldDefaultInitializerValue = "\"" + f->token + "\""; // NOLINT
+                                  } else if ("CHARACTER" == f->name) {
+                                      _fieldDefaultInitializerValue = "'" + f->token + "'";
+                                  } else {
+                                      _fieldDefaultInitializerValue = f->token;
                                   }
+                              } else if ("IDENTIFIER" == f->original_name) {
+                                  _fieldIdentifier = f->token;
                               }
+                          }
+
+                          if (_fieldIdentifier.empty()) {
+                              // Automatically count expected field identifiers in case of missing field options.
+                              fieldIdentifierCounter++;
                           }
 
                           std::map<std::string, MetaMessage::MetaField::MetaFieldDataTypes> STRING_TO_DATATYPE_MAP = {
@@ -8851,8 +10176,8 @@ inline std::pair<std::vector<MetaMessage>, MessageParser::MessageParserErrorCode
 
               // Case: "package XYZ" present.
               if ("MESSAGES_SPECIFICATION" == ast.name) {
-                  // Extract the value of entry "PACKAGE_IDENTIFIER".
-                  auto nodeIdentifier = std::find_if(std::begin(ast.nodes), std::end(ast.nodes), [](auto a) { return (a->name == "PACKAGE_IDENTIFIER"); });
+                  // Extract the value of entry "PACKAGE_NAME".
+                  auto nodeIdentifier = std::find_if(std::begin(ast.nodes), std::end(ast.nodes), [](auto a) { return (a->name == "PACKAGE_NAME"); });
                   std::string packageName;
                   if (nodeIdentifier != std::end(ast.nodes)) {
                       packageName = (*nodeIdentifier)->token;
@@ -8899,7 +10224,7 @@ inline std::pair<std::vector<MetaMessage>, MessageParser::MessageParserErrorCode
                 std::vector<int32_t> tmpNumericalFieldIdentifiers{};
                 if (check4UniqueFieldNames(*ast, tmpPrefix, tmpMessageNames, tmpFieldNames, tmpNumericalMessageIdentifiers, tmpNumericalFieldIdentifiers)) {
                     transform2MetaMessages(*ast, listOfMetaMessages);
-                    retVal = {listOfMetaMessages, MessageParserErrorCodes::NO_ERROR};
+                    retVal = {listOfMetaMessages, MessageParserErrorCodes::NO_MESSAGEPARSER_ERROR};
                 } else {
                     retVal = {listOfMetaMessages, MessageParserErrorCodes::DUPLICATE_IDENTIFIERS};
                 }
@@ -8913,20 +10238,11 @@ inline std::pair<std::vector<MetaMessage>, MessageParser::MessageParserErrorCode
 }
 } // namespace cluon
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/TerminateHandler.hpp"
@@ -8972,30 +10288,103 @@ inline TerminateHandler::TerminateHandler() noexcept {
 
 } // namespace cluon
 /*
- * Copyright (C) 2017-2018  Christian Berger
+ * Copyright (C) 2019  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-//#include "cluon/UDPSender.hpp"
-//#include "cluon/UDPPacketSizeConstraints.hpp"
+//#include "cluon/IPv4Tools.hpp"
 
 // clang-format off
 #ifdef WIN32
+    #include <Winsock2.h> // for WSAStartUp
+    #include <ws2tcpip.h>
     #include <iostream>
 #else
     #include <arpa/inet.h>
+    #include <netdb.h>
+
+    #if defined(BSD)
+        #include <netinet/in.h>
+        #include <sys/socket.h>
+    #endif
+#endif
+// clang-format on
+
+#include <cstring>
+
+namespace cluon {
+
+inline std::string getIPv4FromHostname(const std::string &hostname) noexcept {
+#ifdef WIN32
+    // Load Winsock 2.2 DLL.
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        std::cerr << "[cluon::getIPv4FromHostname] Error while calling WSAStartUp: " << WSAGetLastError() << std::endl;
+    }
+#endif
+    std::string result{""};
+    if (!hostname.empty()) {
+        struct addrinfo hint;
+        {
+            std::memset(&hint, 1, sizeof(struct addrinfo));
+            hint.ai_flags = AI_CANONNAME;
+            hint.ai_family = AF_INET;
+            hint.ai_socktype = 0;
+            hint.ai_protocol = 0;
+            hint.ai_addrlen = 0;
+            hint.ai_canonname = nullptr;
+            hint.ai_addr = nullptr;
+            hint.ai_next = nullptr;
+        }
+
+        struct addrinfo *listOfHosts{nullptr};
+        if (0 == getaddrinfo(hostname.c_str(), nullptr, &hint, &listOfHosts)) {
+            for(struct addrinfo *e = listOfHosts; nullptr != listOfHosts; listOfHosts = listOfHosts->ai_next) {
+                if (nullptr != e) {
+                    if (AF_INET == e->ai_family) {
+                        struct sockaddr_in *sinp = reinterpret_cast<struct sockaddr_in*>(e->ai_addr);
+                        char buf[INET_ADDRSTRLEN];
+                        const char *addr = inet_ntop(AF_INET, &sinp->sin_addr, buf, INET_ADDRSTRLEN);
+                        if ( (nullptr != addr) && (result.empty()) ) {
+                            result = std::string(addr);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (nullptr != listOfHosts) {
+            freeaddrinfo(listOfHosts);
+        }
+    }
+#ifdef WIN32
+    WSACleanup();
+#endif
+    return result;
+}
+
+} // namespace cluon
+/*
+ * Copyright (C) 2017-2018  Christian Berger
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
+//#include "cluon/UDPSender.hpp"
+//#include "cluon/IPv4Tools.hpp"
+//#include "cluon/UDPPacketSizeConstraints.hpp"
+
+// clang-format off
+#ifndef WIN32
+    #include <arpa/inet.h>
+    #include <ifaddrs.h>
+    #include <netdb.h>
     #include <sys/socket.h>
     #include <sys/types.h>
     #include <unistd.h>
@@ -9005,6 +10394,7 @@ inline TerminateHandler::TerminateHandler() noexcept {
 #include <cerrno>
 #include <cstring>
 #include <algorithm>
+#include <iostream>
 #include <iterator>
 #include <sstream>
 #include <vector>
@@ -9015,7 +10405,7 @@ inline UDPSender::UDPSender(const std::string &sendToAddress, uint16_t sendToPor
     : m_socketMutex()
     , m_sendToAddress() {
     // Decompose given address into tokens to check validity with numerical IPv4 address.
-    std::string tmp{sendToAddress};
+    std::string tmp{cluon::getIPv4FromHostname(sendToAddress)};
     std::replace(tmp.begin(), tmp.end(), '.', ' ');
     std::istringstream sstr{tmp};
     std::vector<int> sendToAddressTokens{std::istream_iterator<int>(sstr), std::istream_iterator<int>()};
@@ -9037,6 +10427,64 @@ inline UDPSender::UDPSender(const std::string &sendToAddress, uint16_t sendToPor
 #endif
 
         m_socket = ::socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
+
+#ifndef WIN32
+        // Check whether given address is a broadcast address.
+        bool isBroadcast{false};
+        {
+            isBroadcast |= (sendToAddress == "255.255.255.255");
+            if (!isBroadcast) {
+                struct ifaddrs *ifaddr{nullptr};
+                if (0 == getifaddrs(&ifaddr)) {
+                    for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+                        if (NULL == ifa->ifa_addr) continue; // LCOV_EXCL_LINE
+                        char broadcastAddress[NI_MAXHOST];
+#ifdef __APPLE__
+                        if (NULL == ifa->ifa_dstaddr) continue; // LCOV_EXCL_LINE
+                        if (0 == ::getnameinfo(ifa->ifa_dstaddr,
+                               sizeof(struct sockaddr_in),
+                               broadcastAddress, NI_MAXHOST,
+                               NULL, 0, NI_NUMERICHOST))
+#else
+                        if (NULL == ifa->ifa_ifu.ifu_broadaddr) continue; // LCOV_EXCL_LINE
+                        if (0 == ::getnameinfo(ifa->ifa_ifu.ifu_broadaddr,
+                               sizeof(struct sockaddr_in),
+                               broadcastAddress, NI_MAXHOST,
+                               NULL, 0, NI_NUMERICHOST))
+#endif
+                        {
+                             std::string _tmp{broadcastAddress};
+                             isBroadcast |= (_tmp.compare(sendToAddress) == 0);
+                        }
+                    }
+                    freeifaddrs(ifaddr);
+                }
+            }
+        }
+#endif
+
+#ifndef WIN32
+        if (!(m_socket < 0) && isBroadcast) {
+            // Enabling broadcast.
+            uint32_t YES = 1;
+            // clang-format off
+            auto retVal = ::setsockopt(m_socket, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<char *>(&YES), sizeof(YES)); // NOLINT
+            // clang-format on
+            if (0 > retVal) {
+#ifdef WIN32 // LCOV_EXCL_LINE
+                auto errorCode = WSAGetLastError();
+#else
+                auto errorCode = errno; // LCOV_EXCL_LINE
+#endif                                  // LCOV_EXCL_LINE
+                std::cerr << "[cluon::UDPSender] Failed to perform socket operation: "; // LCOV_EXCL_LINE
+#ifdef WIN32 // LCOV_EXCL_LINE
+                std::cerr << errorCode << std::endl; 
+#else
+                std::cerr << ::strerror(errorCode) << " (" << errorCode << ")" << std::endl; // LCOV_EXCL_LINE
+#endif // LCOV_EXCL_LINE
+            }
+        }
+#endif
 
         // Bind to random address/port but store sender port.
         if (!(m_socket < 0)) {
@@ -9112,21 +10560,13 @@ inline std::pair<ssize_t, int32_t> UDPSender::send(std::string &&data) const noe
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/UDPReceiver.hpp"
+//#include "cluon/IPv4Tools.hpp"
 //#include "cluon/TerminateHandler.hpp"
 //#include "cluon/UDPPacketSizeConstraints.hpp"
 
@@ -9141,11 +10581,15 @@ inline std::pair<ssize_t, int32_t> UDPSender::send(std::string &&data) const noe
 
     #include <iostream>
 #else
+    #ifdef __linux__
+        #include <linux/sockios.h>
+    #endif
+
     #include <arpa/inet.h>
+    #include <fcntl.h>
     #include <sys/ioctl.h>
     #include <sys/socket.h>
     #include <sys/types.h>
-    #include <fcntl.h>
     #include <unistd.h>
 #endif
 
@@ -9176,7 +10620,7 @@ inline UDPReceiver::UDPReceiver(const std::string &receiveFromAddress,
     , m_readFromSocketThread()
     , m_delegate(std::move(delegate)) {
     // Decompose given address string to check validity with numerical IPv4 address.
-    std::string tmp{receiveFromAddress};
+    std::string tmp{cluon::getIPv4FromHostname(receiveFromAddress)};
     std::replace(tmp.begin(), tmp.end(), '.', ' ');
     std::istringstream sstr{tmp};
     std::vector<int> receiveFromAddressTokens{std::istream_iterator<int>(sstr), std::istream_iterator<int>()};
@@ -9187,13 +10631,51 @@ inline UDPReceiver::UDPReceiver(const std::string &receiveFromAddress,
         && (0 < receiveFromPort)) {
         // Check for valid IP address.
         struct sockaddr_in tmpSocketAddress {};
-        const bool isValid = (0 < ::inet_pton(AF_INET, receiveFromAddress.c_str(), &(tmpSocketAddress.sin_addr))) && (224 > receiveFromAddressTokens[0]);
+        const bool isValid = (0 < ::inet_pton(AF_INET, receiveFromAddress.c_str(), &(tmpSocketAddress.sin_addr))) && (224 > receiveFromAddressTokens[0] || 255 == receiveFromAddressTokens[0]); // Accept regular IP addresses (ie., non-multicast addesses and the network-wide broadcast address 255.255.255.255.
 
         // Check for UDP multicast, i.e., IP address range [225.0.0.1 - 239.255.255.255].
         m_isMulticast = (((224 < receiveFromAddressTokens[0]) && (receiveFromAddressTokens[0] <= 239))
                          && ((0 <= receiveFromAddressTokens[1]) && (receiveFromAddressTokens[1] <= 255))
                          && ((0 <= receiveFromAddressTokens[2]) && (receiveFromAddressTokens[2] <= 255))
                          && ((1 <= receiveFromAddressTokens[3]) && (receiveFromAddressTokens[3] <= 255)));
+
+#ifndef WIN32
+        // Check whether given address is a broadcast address.
+        bool isBroadcast{false};
+        {
+            isBroadcast |= (receiveFromAddress == "255.255.255.255");
+            if (!isBroadcast) {
+                struct ifaddrs *ifaddr{nullptr};
+                if (0 == getifaddrs(&ifaddr)) {
+                    for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+                        if (NULL == ifa->ifa_addr) continue; // LCOV_EXCL_LINE
+
+                        if (ifa->ifa_addr->sa_family == AF_INET) {
+                            char broadcastAddress[NI_MAXHOST];
+#ifdef __APPLE__
+                            if (NULL == ifa->ifa_dstaddr) continue; // LCOV_EXCL_LINE
+                            if (0 == ::getnameinfo(ifa->ifa_dstaddr,
+                                   sizeof(struct sockaddr_in),
+                                   broadcastAddress, NI_MAXHOST,
+                                   NULL, 0, NI_NUMERICHOST))
+#else
+                            if (NULL == ifa->ifa_ifu.ifu_broadaddr) continue; // LCOV_EXCL_LINE
+                            if (0 == ::getnameinfo(ifa->ifa_ifu.ifu_broadaddr,
+                                   sizeof(struct sockaddr_in),
+                                   broadcastAddress, NI_MAXHOST,
+                                   NULL, 0, NI_NUMERICHOST))
+#endif
+                            {
+                                 std::string _tmp{broadcastAddress};
+                                 isBroadcast |= (_tmp.compare(receiveFromAddress) == 0);
+                            }
+                        }
+                    }
+                    freeifaddrs(ifaddr);
+                }
+            }
+        }
+#endif
 
         std::memset(&m_receiveFromAddress, 0, sizeof(m_receiveFromAddress));
 #ifdef WIN32
@@ -9239,6 +10721,24 @@ inline UDPReceiver::UDPReceiver(const std::string &receiveFromAddress,
                 closeSocket(errorCode); // LCOV_EXCL_LINE
             }
         }
+
+#ifndef WIN32
+        if (!(m_socket < 0) && isBroadcast) {
+            // Enabling broadcast.
+            uint32_t YES = 1;
+            // clang-format off
+            auto retVal = ::setsockopt(m_socket, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<char *>(&YES), sizeof(YES)); // NOLINT
+            // clang-format on
+            if (0 > retVal) {
+#ifdef WIN32 // LCOV_EXCL_LINE
+                auto errorCode = WSAGetLastError();
+#else
+                auto errorCode = errno; // LCOV_EXCL_LINE
+#endif                                  // LCOV_EXCL_LINE
+                closeSocket(errorCode); // LCOV_EXCL_LINE
+            }
+        }
+#endif
 
         if (!(m_socket < 0)) {
             // Trying to enable non_blocking mode.
@@ -9528,23 +11028,15 @@ inline void UDPReceiver::readFromSocket() noexcept {
 }
 } // namespace cluon
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/TCPConnection.hpp"
+//#include "cluon/IPv4Tools.hpp"
 //#include "cluon/TerminateHandler.hpp"
 
 // clang-format off
@@ -9552,6 +11044,10 @@ inline void UDPReceiver::readFromSocket() noexcept {
     #include <errno.h>
     #include <iostream>
 #else
+    #ifdef __linux__
+        #include <linux/sockios.h>
+    #endif
+
     #include <arpa/inet.h>
     #include <sys/ioctl.h>
     #include <sys/socket.h>
@@ -9573,6 +11069,7 @@ namespace cluon {
 
 inline TCPConnection::TCPConnection(const int32_t &socket) noexcept
     : m_socket(socket)
+    , m_cleanup(false)
     , m_newDataDelegate(nullptr)
     , m_connectionLostDelegate(nullptr) {
     if (!(m_socket < 0)) {
@@ -9587,7 +11084,8 @@ inline TCPConnection::TCPConnection(const std::string &address,
     : m_newDataDelegate(std::move(newDataDelegate))
     , m_connectionLostDelegate(std::move(connectionLostDelegate)) {
     // Decompose given address string to check validity with numerical IPv4 address.
-    std::string tmp{address};
+    std::string resolvedHostname{cluon::getIPv4FromHostname(address)};
+    std::string tmp{resolvedHostname};
     std::replace(tmp.begin(), tmp.end(), '.', ' ');
     std::istringstream sstr{tmp};
     std::vector<int> addressTokens{std::istream_iterator<int>(sstr), std::istream_iterator<int>()};
@@ -9596,10 +11094,10 @@ inline TCPConnection::TCPConnection(const std::string &address,
         && !(std::end(addressTokens) != std::find_if(addressTokens.begin(), addressTokens.end(), [](int a) { return (a < 0) || (a > 255); })) && (0 < port)) {
         // Check for valid IP address.
         struct sockaddr_in tmpSocketAddress {};
-        const bool isValid = (0 < ::inet_pton(AF_INET, address.c_str(), &(tmpSocketAddress.sin_addr)));
+        const bool isValid = (0 < ::inet_pton(AF_INET, resolvedHostname.c_str(), &(tmpSocketAddress.sin_addr)));
         if (isValid) {
             std::memset(&m_address, 0, sizeof(m_address));
-            m_address.sin_addr.s_addr = ::inet_addr(address.c_str());
+            m_address.sin_addr.s_addr = ::inet_addr(resolvedHostname.c_str());
             m_address.sin_family      = AF_INET;
             m_address.sin_port        = htons(port);
 #ifdef WIN32
@@ -9667,7 +11165,9 @@ inline void TCPConnection::closeSocket(int errorCode) noexcept {
 #ifdef WIN32
         ::shutdown(m_socket, SD_BOTH);
         ::closesocket(m_socket);
-        WSACleanup();
+        if(m_cleanup){
+            WSACleanup();
+        }
 #else
         ::shutdown(m_socket, SHUT_RDWR);                                             // Disallow further read/write operations.
         ::close(m_socket);
@@ -9814,20 +11314,11 @@ inline void TCPConnection::readFromSocket() noexcept {
 }
 } // namespace cluon
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/TCPServer.hpp"
@@ -10015,18 +11506,9 @@ inline void TCPServer::readFromSocket() noexcept {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/ToProtoVisitor.hpp"
@@ -10245,86 +11727,79 @@ inline std::size_t ToProtoVisitor::toVarInt(std::ostream &out, uint64_t v) noexc
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/FromProtoVisitor.hpp"
 
 #include <cstddef>
 #include <cstring>
+#include <utility>
 
 namespace cluon {
 
-inline void FromProtoVisitor::readBytesFromStream(std::istream &in, std::size_t bytesToReadFromStream, std::vector<char> &buffer) noexcept {
-    constexpr std::size_t CHUNK_SIZE{1024};
-    std::streamsize bufferPosition{0};
+inline void FromProtoVisitor::readBytesFromStream(std::istream &in, std::size_t bytesToReadFromStream, char *buffer) noexcept {
+    if (nullptr != buffer) {
+        const constexpr std::size_t CHUNK_SIZE{1024};
+        std::streamsize bufferPosition{0};
+        std::streamsize extractedBytes{0};
 
-    // Ensure buffer has enough space to hold the bytes.
-    buffer.reserve(bytesToReadFromStream);
-
-    while ((0 < bytesToReadFromStream) && in.good()) {
-        // clang-format off
-        in.read(&buffer[static_cast<std::size_t>(bufferPosition)], /* Flawfinder: ignore */ /* Cf. buffer.reserve(...) above.  */
-                (bytesToReadFromStream > CHUNK_SIZE) ? CHUNK_SIZE : static_cast<std::streamsize>(bytesToReadFromStream));
-        // clang-format on
-        const std::streamsize EXTRACTED_BYTES{in.gcount()};
-        bufferPosition += EXTRACTED_BYTES;
-        bytesToReadFromStream -= static_cast<std::size_t>(EXTRACTED_BYTES);
+        while ((0 < bytesToReadFromStream) && in.good()) {
+            // clang-format off
+            in.read(&buffer[static_cast<std::size_t>(bufferPosition)], /* Flawfinder: ignore */ /* Cf. buffer.reserve(...) above.  */
+                    (bytesToReadFromStream > CHUNK_SIZE) ? CHUNK_SIZE : static_cast<std::streamsize>(bytesToReadFromStream));
+            // clang-format on
+            extractedBytes = in.gcount();
+            bufferPosition += extractedBytes;
+            bytesToReadFromStream -= static_cast<std::size_t>(extractedBytes);
+        }
     }
 }
 
 inline void FromProtoVisitor::decodeFrom(std::istream &in) noexcept {
     // Reset internal states as this deserializer could be reused.
-    m_buffer.str("");
     m_mapOfKeyValues.clear();
-
     while (in.good()) {
         // First stage: Read keyFieldType (encoded as VarInt).
-        uint64_t keyFieldType{0};
-        std::size_t bytesRead{fromVarInt(in, keyFieldType)};
-
-        if (bytesRead > 0) {
+        if (0 < fromVarInt(in, m_keyFieldType)) {
             // Succeeded to read keyFieldType entry; extract information.
-            const uint32_t fieldId{static_cast<uint32_t>(keyFieldType >> 3)};
-            const ProtoConstants protoType{static_cast<ProtoConstants>(keyFieldType & 0x7)};
-
-            if (protoType == ProtoConstants::VARINT) {
-                // Directly decode VarInt value.
-                uint64_t value{0};
-                fromVarInt(in, value);
-                ProtoKeyValue pkv{fieldId, value};
-                m_mapOfKeyValues[pkv.key()] = std::move(pkv);
-            } else if (protoType == ProtoConstants::EIGHT_BYTES) {
-                constexpr std::size_t BYTES_TO_READ_FROM_STREAM{sizeof(double)};
-                // Create map entry for Proto key/value here to avoid copying data later.
-                ProtoKeyValue pkv{fieldId, ProtoConstants::EIGHT_BYTES, BYTES_TO_READ_FROM_STREAM};
-                readBytesFromStream(in, BYTES_TO_READ_FROM_STREAM, pkv.rawBuffer());
-                m_mapOfKeyValues[pkv.key()] = std::move(pkv);
-            } else if (protoType == ProtoConstants::LENGTH_DELIMITED) {
-                uint64_t length{0};
-                fromVarInt(in, length);
-                const std::size_t BYTES_TO_READ_FROM_STREAM{static_cast<std::size_t>(length)};
-                // Create map entry for Proto key/value here to avoid copying data later.
-                ProtoKeyValue pkv{fieldId, ProtoConstants::LENGTH_DELIMITED, BYTES_TO_READ_FROM_STREAM};
-                readBytesFromStream(in, BYTES_TO_READ_FROM_STREAM, pkv.rawBuffer());
-                m_mapOfKeyValues[pkv.key()] = std::move(pkv);
-            } else if (protoType == ProtoConstants::FOUR_BYTES) {
-                constexpr std::size_t BYTES_TO_READ_FROM_STREAM{sizeof(float)};
-                // Create map entry for Proto key/value here to avoid copying data later.
-                ProtoKeyValue pkv{fieldId, ProtoConstants::FOUR_BYTES, BYTES_TO_READ_FROM_STREAM};
-                readBytesFromStream(in, BYTES_TO_READ_FROM_STREAM, pkv.rawBuffer());
-                m_mapOfKeyValues[pkv.key()] = std::move(pkv);
+            m_protoType = static_cast<ProtoConstants>(m_keyFieldType & 0x7);
+            m_fieldId = static_cast<uint32_t>(m_keyFieldType >> 3);
+            switch (m_protoType) {
+                case ProtoConstants::VARINT:
+                {
+                    // Directly decode VarInt value.
+                    fromVarInt(in, m_value);
+                    m_mapOfKeyValues.emplace(m_fieldId, linb::any(m_value));
+                }
+                break;
+                case ProtoConstants::EIGHT_BYTES:
+                {
+                    readBytesFromStream(in, sizeof(double), m_doubleValue.buffer.data());
+                    m_doubleValue.uint64Value = le64toh(m_doubleValue.uint64Value);
+                    m_mapOfKeyValues.emplace(m_fieldId, linb::any(m_doubleValue.doubleValue));
+                }
+                break;
+                case ProtoConstants::FOUR_BYTES:
+                {
+                    readBytesFromStream(in, sizeof(float), m_floatValue.buffer.data());
+                    m_floatValue.uint32Value = le32toh(m_floatValue.uint32Value);
+                    m_mapOfKeyValues.emplace(m_fieldId, linb::any(m_floatValue.floatValue));
+                }
+                break;
+                case ProtoConstants::LENGTH_DELIMITED:
+                {
+                    fromVarInt(in, m_value);
+                    const std::size_t BYTES_TO_READ_FROM_STREAM{static_cast<std::size_t>(m_value)};
+                    if (m_stringValue.capacity() < BYTES_TO_READ_FROM_STREAM) {
+                        m_stringValue.reserve(BYTES_TO_READ_FROM_STREAM);
+                    }
+                    readBytesFromStream(in, BYTES_TO_READ_FROM_STREAM, m_stringValue.data());
+                    m_mapOfKeyValues.emplace(m_fieldId, linb::any(std::string(m_stringValue.data(), static_cast<std::size_t>(m_value))));
+                }
+                break;
             }
         }
     }
@@ -10332,90 +11807,8 @@ inline void FromProtoVisitor::decodeFrom(std::istream &in) noexcept {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-inline FromProtoVisitor::ProtoKeyValue::ProtoKeyValue() noexcept
-    : m_key{0}
-    , m_type{ProtoConstants::VARINT}
-    , m_length{0}
-    , m_value{}
-    , m_varIntValue{0} {}
-
-inline FromProtoVisitor::ProtoKeyValue::ProtoKeyValue(uint32_t key, ProtoConstants type, uint64_t length) noexcept
-    : m_key{key}
-    , m_type{type}
-    , m_length{length}
-    , m_value(static_cast<std::size_t>(length))
-    , m_varIntValue{0} {}
-
-inline FromProtoVisitor::ProtoKeyValue::ProtoKeyValue(uint32_t key, uint64_t value) noexcept
-    : m_key{key}
-    , m_type{ProtoConstants::VARINT}
-    , m_length{0}
-    , m_value{}
-    , m_varIntValue{value} {}
-
-inline uint32_t FromProtoVisitor::ProtoKeyValue::key() const noexcept {
-    return m_key;
-}
-
-inline ProtoConstants FromProtoVisitor::ProtoKeyValue::type() const noexcept {
-    return m_type;
-}
-
-inline uint64_t FromProtoVisitor::ProtoKeyValue::length() const noexcept {
-    return m_length;
-}
-
-inline uint64_t FromProtoVisitor::ProtoKeyValue::valueAsVarInt() const noexcept {
-    uint64_t retVal{0};
-    if (type() == ProtoConstants::VARINT) {
-        retVal = m_varIntValue;
-    }
-    return retVal;
-}
-
-inline float FromProtoVisitor::ProtoKeyValue::valueAsFloat() const noexcept {
-    union FloatValue {
-        uint32_t uint32Value;
-        float floatValue{0};
-    } retVal;
-    if (!m_value.empty() && (length() == sizeof(float)) && (m_value.size() == sizeof(float)) && (type() == ProtoConstants::FOUR_BYTES)) {
-        std::memmove(&retVal.uint32Value, &m_value[0], sizeof(float));
-        retVal.uint32Value = le32toh(retVal.uint32Value);
-    }
-    return retVal.floatValue;
-}
-
-inline double FromProtoVisitor::ProtoKeyValue::valueAsDouble() const noexcept {
-    union DoubleValue {
-        uint64_t uint64Value;
-        double doubleValue{0};
-    } retVal;
-    if (!m_value.empty() && (length() == sizeof(double)) && (m_value.size() == sizeof(double)) && (type() == ProtoConstants::EIGHT_BYTES)) {
-        std::memmove(&retVal.uint64Value, &m_value[0], sizeof(double));
-        retVal.uint64Value = le64toh(retVal.uint64Value);
-    }
-    return retVal.doubleValue;
-}
-
-inline std::string FromProtoVisitor::ProtoKeyValue::valueAsString() const noexcept {
-    std::string retVal;
-    if (!m_value.empty() && (length() > 0) && (type() == ProtoConstants::LENGTH_DELIMITED)) {
-        // Create string from buffer.
-        retVal = std::string(m_value.data(), static_cast<std::size_t>(m_length));
-    }
-    return retVal;
-}
-
-inline std::vector<char> &FromProtoVisitor::ProtoKeyValue::rawBuffer() noexcept {
-    return m_value;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
 inline FromProtoVisitor &FromProtoVisitor::operator=(const FromProtoVisitor &other) noexcept {
-    m_buffer.str(other.m_buffer.str());
     m_mapOfKeyValues = other.m_mapOfKeyValues;
-
     return *this;
 }
 
@@ -10432,112 +11825,190 @@ inline void FromProtoVisitor::postVisit() noexcept {}
 inline void FromProtoVisitor::visit(uint32_t id, std::string &&typeName, std::string &&name, bool &v) noexcept {
     (void)typeName;
     (void)name;
-    if (m_mapOfKeyValues.count(id) > 0) {
-        v = (0 != m_mapOfKeyValues[id].valueAsVarInt());
+    if (m_callToDecodeFromWithDirectVisit) {
+        v = (0 != m_value);
+    }
+    else if (m_mapOfKeyValues.count(id) > 0) {
+        try {
+            v = (0 != linb::any_cast<uint64_t>(m_mapOfKeyValues[id]));
+        } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+        }
     }
 }
 
 inline void FromProtoVisitor::visit(uint32_t id, std::string &&typeName, std::string &&name, char &v) noexcept {
     (void)typeName;
     (void)name;
-    if (m_mapOfKeyValues.count(id) > 0) {
-        uint64_t _v = m_mapOfKeyValues[id].valueAsVarInt();
-        v           = static_cast<char>(_v);
+    if (m_callToDecodeFromWithDirectVisit) {
+        v = static_cast<char>(m_value);
+    }
+    else if (m_mapOfKeyValues.count(id) > 0) {
+        try {
+            uint64_t _v = linb::any_cast<uint64_t>(m_mapOfKeyValues[id]);
+            v           = static_cast<char>(_v);
+        } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+        }
     }
 }
 
 inline void FromProtoVisitor::visit(uint32_t id, std::string &&typeName, std::string &&name, int8_t &v) noexcept {
     (void)typeName;
     (void)name;
-    if (m_mapOfKeyValues.count(id) > 0) {
-        uint64_t _v = m_mapOfKeyValues[id].valueAsVarInt();
-        v           = static_cast<int8_t>(fromZigZag8(static_cast<uint8_t>(_v)));
+    if (m_callToDecodeFromWithDirectVisit) {
+        v = static_cast<int8_t>(fromZigZag8(static_cast<uint8_t>(m_value)));
+    }
+    else if (m_mapOfKeyValues.count(id) > 0) {
+        try {
+            uint64_t _v = linb::any_cast<uint64_t>(m_mapOfKeyValues[id]);
+            v           = static_cast<int8_t>(fromZigZag8(static_cast<uint8_t>(_v)));
+        } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+        }
     }
 }
 
 inline void FromProtoVisitor::visit(uint32_t id, std::string &&typeName, std::string &&name, uint8_t &v) noexcept {
     (void)typeName;
     (void)name;
-    if (m_mapOfKeyValues.count(id) > 0) {
-        uint64_t _v = m_mapOfKeyValues[id].valueAsVarInt();
-        v           = static_cast<uint8_t>(_v);
+    if (m_callToDecodeFromWithDirectVisit) {
+        v = static_cast<uint8_t>(m_value);
+    }
+    else if (m_mapOfKeyValues.count(id) > 0) {
+        try {
+            uint64_t _v = linb::any_cast<uint64_t>(m_mapOfKeyValues[id]);
+            v           = static_cast<uint8_t>(_v);
+        } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+        }
     }
 }
 
 inline void FromProtoVisitor::visit(uint32_t id, std::string &&typeName, std::string &&name, int16_t &v) noexcept {
     (void)typeName;
     (void)name;
-    if (m_mapOfKeyValues.count(id) > 0) {
-        uint64_t _v = m_mapOfKeyValues[id].valueAsVarInt();
-        v           = static_cast<int16_t>(fromZigZag16(static_cast<uint16_t>(_v)));
+    if (m_callToDecodeFromWithDirectVisit) {
+        v = static_cast<int16_t>(fromZigZag16(static_cast<uint16_t>(m_value)));
+    }
+    else if (m_mapOfKeyValues.count(id) > 0) {
+        try {
+            uint64_t _v = linb::any_cast<uint64_t>(m_mapOfKeyValues[id]);
+            v           = static_cast<int16_t>(fromZigZag16(static_cast<uint16_t>(_v)));
+        } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+        }
     }
 }
 
 inline void FromProtoVisitor::visit(uint32_t id, std::string &&typeName, std::string &&name, uint16_t &v) noexcept {
     (void)typeName;
     (void)name;
-    if (m_mapOfKeyValues.count(id) > 0) {
-        uint64_t _v = m_mapOfKeyValues[id].valueAsVarInt();
-        v           = static_cast<uint16_t>(_v);
+    if (m_callToDecodeFromWithDirectVisit) {
+        v = static_cast<uint16_t>(m_value);
+    }
+    else if (m_mapOfKeyValues.count(id) > 0) {
+        try {
+            uint64_t _v = linb::any_cast<uint64_t>(m_mapOfKeyValues[id]);
+            v           = static_cast<uint16_t>(_v);
+        } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+        }
     }
 }
 
 inline void FromProtoVisitor::visit(uint32_t id, std::string &&typeName, std::string &&name, int32_t &v) noexcept {
     (void)typeName;
     (void)name;
-    if (m_mapOfKeyValues.count(id) > 0) {
-        uint64_t _v = m_mapOfKeyValues[id].valueAsVarInt();
-        v           = static_cast<int32_t>(fromZigZag32(static_cast<uint32_t>(_v)));
+    if (m_callToDecodeFromWithDirectVisit) {
+        v = static_cast<int32_t>(fromZigZag32(static_cast<uint32_t>(m_value)));
+    }
+    else if (m_mapOfKeyValues.count(id) > 0) {
+        try {
+            uint64_t _v = linb::any_cast<uint64_t>(m_mapOfKeyValues[id]);
+            v           = static_cast<int32_t>(fromZigZag32(static_cast<uint32_t>(_v)));
+        } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+        }
     }
 }
 
 inline void FromProtoVisitor::visit(uint32_t id, std::string &&typeName, std::string &&name, uint32_t &v) noexcept {
     (void)typeName;
     (void)name;
-    if (m_mapOfKeyValues.count(id) > 0) {
-        uint64_t _v = m_mapOfKeyValues[id].valueAsVarInt();
-        v           = static_cast<uint32_t>(_v);
+    if (m_callToDecodeFromWithDirectVisit) {
+        v = static_cast<uint32_t>(m_value);
+    }
+    else if (m_mapOfKeyValues.count(id) > 0) {
+        try {
+            uint64_t _v = linb::any_cast<uint64_t>(m_mapOfKeyValues[id]);
+            v           = static_cast<uint32_t>(_v);
+        } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+        }
     }
 }
 
 inline void FromProtoVisitor::visit(uint32_t id, std::string &&typeName, std::string &&name, int64_t &v) noexcept {
     (void)typeName;
     (void)name;
-    if (m_mapOfKeyValues.count(id) > 0) {
-        uint64_t _v = m_mapOfKeyValues[id].valueAsVarInt();
-        v           = static_cast<int64_t>(fromZigZag64(_v));
+    if (m_callToDecodeFromWithDirectVisit) {
+        v = static_cast<int64_t>(fromZigZag64(static_cast<uint64_t>(m_value)));
+    }
+    else if (m_mapOfKeyValues.count(id) > 0) {
+        try {
+            uint64_t _v = linb::any_cast<uint64_t>(m_mapOfKeyValues[id]);
+            v           = static_cast<int64_t>(fromZigZag64(_v));
+        } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+        }
     }
 }
 
 inline void FromProtoVisitor::visit(uint32_t id, std::string &&typeName, std::string &&name, uint64_t &v) noexcept {
     (void)typeName;
     (void)name;
-    if (m_mapOfKeyValues.count(id) > 0) {
-        v = m_mapOfKeyValues[id].valueAsVarInt();
+    if (m_callToDecodeFromWithDirectVisit) {
+        v = m_value;
+    }
+    else if (m_mapOfKeyValues.count(id) > 0) {
+        try {
+            v = linb::any_cast<uint64_t>(m_mapOfKeyValues[id]);
+        } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+        }
     }
 }
 
 inline void FromProtoVisitor::visit(uint32_t id, std::string &&typeName, std::string &&name, float &v) noexcept {
     (void)typeName;
     (void)name;
-    if (m_mapOfKeyValues.count(id) > 0) {
-        v = m_mapOfKeyValues[id].valueAsFloat();
+    if (m_callToDecodeFromWithDirectVisit) {
+        v = m_floatValue.floatValue;
+    }
+    else if (m_mapOfKeyValues.count(id) > 0) {
+        try {
+            v = linb::any_cast<float>(m_mapOfKeyValues[id]);
+        } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+        }
     }
 }
 
 inline void FromProtoVisitor::visit(uint32_t id, std::string &&typeName, std::string &&name, double &v) noexcept {
     (void)typeName;
     (void)name;
-    if (m_mapOfKeyValues.count(id) > 0) {
-        v = m_mapOfKeyValues[id].valueAsDouble();
+    if (m_callToDecodeFromWithDirectVisit) {
+        v = m_doubleValue.doubleValue;
+    }
+    else if (m_mapOfKeyValues.count(id) > 0) {
+        try {
+            v = linb::any_cast<double>(m_mapOfKeyValues[id]);
+        } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+        }
     }
 }
 
 inline void FromProtoVisitor::visit(uint32_t id, std::string &&typeName, std::string &&name, std::string &v) noexcept {
     (void)typeName;
     (void)name;
-    if (m_mapOfKeyValues.count(id) > 0) {
-        v = m_mapOfKeyValues[id].valueAsString();
+    if (m_callToDecodeFromWithDirectVisit) {
+        v = std::string(m_stringValue.data(), static_cast<std::size_t>(m_value));
+    }
+    else if (m_mapOfKeyValues.count(id) > 0) {
+        try {
+            v = linb::any_cast<std::string>(m_mapOfKeyValues[id]);
+        } catch (const linb::bad_any_cast &) { // LCOV_EXCL_LINE
+        }
     }
 }
 
@@ -10567,11 +12038,12 @@ inline std::size_t FromProtoVisitor::fromVarInt(std::istream &in, uint64_t &valu
     constexpr uint64_t MSB   = 0x80;
 
     std::size_t size = 0;
+    uint64_t C{0};
     while (in.good()) {
-        const auto C     = in.get();
-        const uint64_t B = static_cast<uint64_t>(C) & MASK;
-        value |= B << (SHIFT * size++);
-        if (!(static_cast<uint64_t>(C) & MSB)) { // NOLINT
+        auto x = in.get();
+        C = static_cast<uint64_t>(x);
+        value |= (C & MASK) << (SHIFT * size++);
+        if (!(C & MSB)) { // NOLINT
             break;
         }
     }
@@ -10582,18 +12054,9 @@ inline std::size_t FromProtoVisitor::fromVarInt(std::istream &in, uint64_t &valu
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 // clang-format off
@@ -10836,18 +12299,9 @@ inline void FromLCMVisitor::calculateHash(const std::string &s) noexcept {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 // clang-format off
@@ -11278,20 +12732,11 @@ inline void FromMsgPackVisitor::visit(uint32_t id, std::string &&typeName, std::
 
 } // namespace cluon
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2019  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/FromJSONVisitor.hpp"
@@ -11328,9 +12773,9 @@ inline std::map<std::string, FromJSONVisitor::JSONKeyValue> FromJSONVisitor::rea
             if (m.size() > 0) {
                 std::string match{m[0]};
                 std::vector<std::string> retVal = stringtoolbox::split(match, ':');
-                if ((retVal.size() == 1) || ((retVal.size() == 2) && (stringtoolbox::trim(retVal[1]).size() == 0))) {
+                if ( (retVal.size() == 2) && (stringtoolbox::trim(retVal[1]).size() == 0) ) {
                     std::string keyOfNestedObject{stringtoolbox::trim(retVal[0])};
-                    keyOfNestedObject = stringtoolbox::split(keyOfNestedObject, '"')[0];
+                    keyOfNestedObject = stringtoolbox::split(keyOfNestedObject, '"')[1];
                     {
                         std::string suffix(m.suffix());
                         suffix   = stringtoolbox::trim(suffix);
@@ -11347,11 +12792,11 @@ inline std::map<std::string, FromJSONVisitor::JSONKeyValue> FromJSONVisitor::rea
 
                     result[keyOfNestedObject] = kv;
                 }
-                if ((retVal.size() == 2) && (stringtoolbox::trim(retVal[1]).size() > 0)) {
+                if ( (retVal.size() == 2) && (stringtoolbox::trim(retVal[1]).size() > 0) ) {
                     auto e = std::make_pair(stringtoolbox::trim(retVal[0]), stringtoolbox::trim(retVal[1]));
 
                     JSONKeyValue kv;
-                    kv.m_key = stringtoolbox::split(e.first, '"')[0];
+                    kv.m_key = stringtoolbox::split(e.first, '"')[1];
 
                     if ((e.second.size() > 0) && (e.second.at(0) == '"')) {
                         kv.m_type  = JSONConstants::STRING;
@@ -11609,18 +13054,9 @@ inline void FromJSONVisitor::visit(uint32_t id, std::string &&typeName, std::str
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/GenericMessage.hpp"
@@ -11739,7 +13175,7 @@ inline MetaMessage GenericMessage::GenericMessageVisitor::metaMessage() const no
     return m_metaMessage;
 }
 
-inline std::map<uint32_t, linb::any> GenericMessage::GenericMessageVisitor::intermediateDataRepresentation() const noexcept {
+inline std::unordered_map<uint32_t, linb::any, UseUInt32ValueAsHashKey> GenericMessage::GenericMessageVisitor::intermediateDataRepresentation() const noexcept {
     return m_intermediateDataRepresentation;
 }
 
@@ -12021,18 +13457,9 @@ inline void GenericMessage::createFrom(const MetaMessage &mm, const std::vector<
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/ToJSONVisitor.hpp"
@@ -12193,18 +13620,9 @@ inline std::string ToJSONVisitor::encodeBase64(const std::string &input) noexcep
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/ToCSVVisitor.hpp"
@@ -12392,18 +13810,9 @@ inline void ToCSVVisitor::visit(uint32_t id, std::string &&typeName, std::string
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 // clang-format off
@@ -12598,20 +14007,11 @@ inline void ToLCMVisitor::calculateHash(const std::string &s) noexcept {
 
 } // namespace cluon
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/LCMToGenericMessage.hpp"
@@ -12651,7 +14051,7 @@ inline int32_t LCMToGenericMessage::setMessageSpecification(const std::string &m
 
     cluon::MessageParser mp;
     auto parsingResult = mp.parse(ms);
-    if (cluon::MessageParser::MessageParserErrorCodes::NO_ERROR == parsingResult.second) {
+    if (cluon::MessageParser::MessageParserErrorCodes::NO_MESSAGEPARSER_ERROR == parsingResult.second) {
         m_listOfMetaMessages = parsingResult.first;
         for (const auto &mm : m_listOfMetaMessages) { m_scopeOfMetaMessages[mm.messageName()] = mm; }
         retVal = static_cast<int32_t>(m_listOfMetaMessages.size());
@@ -12722,18 +14122,9 @@ inline cluon::GenericMessage LCMToGenericMessage::getGenericMessage(const std::s
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 // clang-format off
@@ -12995,20 +14386,11 @@ inline void ToMsgPackVisitor::visit(uint32_t id, std::string &&typeName, std::st
 
 } // namespace cluon
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/OD4Session.hpp"
@@ -13135,18 +14517,9 @@ inline bool OD4Session::isRunning() noexcept {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/ToODVDVisitor.hpp"
@@ -13281,18 +14654,9 @@ inline void ToODVDVisitor::visit(uint32_t id, std::string &&typeName, std::strin
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/EnvelopeConverter.hpp"
@@ -13301,9 +14665,9 @@ inline void ToODVDVisitor::visit(uint32_t id, std::string &&typeName, std::strin
 //#include "cluon/FromProtoVisitor.hpp"
 //#include "cluon/GenericMessage.hpp"
 //#include "cluon/MessageParser.hpp"
+//#include "cluon/Time.hpp"
 //#include "cluon/ToJSONVisitor.hpp"
 //#include "cluon/ToProtoVisitor.hpp"
-//#include "cluon/Time.hpp"
 //#include "cluon/any/any.hpp"
 
 #include <algorithm>
@@ -13320,7 +14684,7 @@ inline int32_t EnvelopeConverter::setMessageSpecification(const std::string &ms)
 
     cluon::MessageParser mp;
     auto parsingResult = mp.parse(ms);
-    if (cluon::MessageParser::MessageParserErrorCodes::NO_ERROR == parsingResult.second) {
+    if (cluon::MessageParser::MessageParserErrorCodes::NO_MESSAGEPARSER_ERROR == parsingResult.second) {
         m_listOfMetaMessages = parsingResult.first;
         for (const auto &mm : m_listOfMetaMessages) { m_scopeOfMetaMessages[mm.messageIdentifier()] = mm; }
         retVal = static_cast<int32_t>(m_listOfMetaMessages.size());
@@ -13351,11 +14715,9 @@ inline std::string EnvelopeConverter::getJSONFromProtoEncodedEnvelope(const std:
         }
 
         if (0 == envelope.dataType()) {
-            // Directly decoding complete OD4 container failed, try decoding
-            // without header.
+            // Directly decoding complete OD4 container failed, try decoding without header.
             cluon::FromProtoVisitor protoDecoder;
-            protoDecoder.decodeFrom(sstr);
-            envelope.accept(protoDecoder);
+            protoDecoder.decodeFrom(sstr, envelope);
         }
 
         retVal = getJSONFromEnvelope(envelope);
@@ -13442,10 +14804,7 @@ inline std::string EnvelopeConverter::getProtoEncodedEnvelopeFromJSON(const std:
         gm.accept(protoEncoder);
 
         cluon::data::Envelope env;
-        env.dataType(messageIdentifier)
-           .serializedData(protoEncoder.encodedData())
-           .senderStamp(senderStamp)
-           .sampleTimeStamp(sampleTimeStamp);
+        env.dataType(messageIdentifier).serializedData(protoEncoder.encodedData()).senderStamp(senderStamp).sampleTimeStamp(sampleTimeStamp);
 
         retVal = cluon::serializeEnvelope(std::move(env));
     }
@@ -13454,20 +14813,11 @@ inline std::string EnvelopeConverter::getProtoEncodedEnvelopeFromJSON(const std:
 
 } // namespace cluon
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/Player.hpp"
@@ -13611,17 +14961,17 @@ inline void Player::resetIterators() noexcept {
 
 inline void Player::computeInitialCacheLevelAndFillCache() noexcept {
     if (m_recFileValid && (m_index.size() > 0)) {
-        int64_t smallestSampleTimePoint = std::numeric_limits<int64_t>::max();
-        int64_t largestSampleTimePoint  = std::numeric_limits<int64_t>::min();
+        int64_t smallestSampleTimePoint = (std::numeric_limits<int64_t>::max)();
+        int64_t largestSampleTimePoint  = (std::numeric_limits<int64_t>::min)();
         for (auto it = m_index.begin(); it != m_index.end(); it++) {
-            smallestSampleTimePoint = std::min(smallestSampleTimePoint, it->first);
-            largestSampleTimePoint  = std::max(largestSampleTimePoint, it->first);
+            smallestSampleTimePoint = (std::min)(smallestSampleTimePoint, it->first);
+            largestSampleTimePoint  = (std::max)(largestSampleTimePoint, it->first);
         }
 
         const uint32_t ENTRIES_TO_READ_PER_SECOND_FOR_REALTIME_REPLAY
             = static_cast<uint32_t>(std::ceil(static_cast<float>(m_index.size()) * (static_cast<float>(Player::ONE_SECOND_IN_MICROSECONDS))
                                               / static_cast<float>(largestSampleTimePoint - smallestSampleTimePoint)));
-        m_desiredInitialLevel = std::max<uint32_t>(ENTRIES_TO_READ_PER_SECOND_FOR_REALTIME_REPLAY * Player::LOOK_AHEAD_IN_S, MIN_ENTRIES_FOR_LOOK_AHEAD);
+        m_desiredInitialLevel = (std::max<uint32_t>)(ENTRIES_TO_READ_PER_SECOND_FOR_REALTIME_REPLAY * Player::LOOK_AHEAD_IN_S, MIN_ENTRIES_FOR_LOOK_AHEAD);
 
         std::clog << "[cluon::Player]: Initializing cache with " << m_desiredInitialLevel << " entries." << std::endl;
 
@@ -13789,7 +15139,10 @@ inline void Player::seekTo(float ratio) noexcept {
                 m_currentEnvelopeToReplay++;
             }
         }
-        m_nextEntryToReadFromRecFile = m_previousEnvelopeAlreadyReplayed = m_currentEnvelopeToReplay;
+        try {
+            std::lock_guard<std::mutex> lck(m_indexMutex);
+            m_nextEntryToReadFromRecFile = m_previousEnvelopeAlreadyReplayed = m_currentEnvelopeToReplay;
+        } catch (...) {} // LCOV_EXCL_LINE
 
         // Refill cache.
         m_envelopeCache.clear();
@@ -13895,20 +15248,11 @@ inline float Player::checkRefillingCache(const uint32_t &numberOfEntries, float 
 
 } // namespace cluon
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/SharedMemory.hpp"
@@ -13924,11 +15268,13 @@ inline float Player::checkRefillingCache(const uint32_t &numberOfEntries, float 
     #include <sys/sem.h>
     #include <sys/shm.h>
     #include <sys/stat.h>
+    #include <sys/time.h>
     #include <sys/types.h>
     #include <unistd.h>
 #endif
 // clang-format on
 
+#include <cerrno>
 #include <cstring>
 #include <iostream>
 #include <fstream>
@@ -13965,15 +15311,31 @@ inline SharedMemory::SharedMemory(const std::string &name, uint32_t size) noexce
         m_usePOSIX                           = ((nullptr != CLUON_SHAREDMEMORY_POSIX) && (CLUON_SHAREDMEMORY_POSIX[0] == '1'));
         std::clog << "[cluon::SharedMemory] Using " << (m_usePOSIX ? "POSIX" : "SysV") << " implementation." << std::endl;
 #endif
-        // For NetBSD and OpenBSD or for the SysV-based implementation, we put all token files to /tmp.
-        if (!m_usePOSIX && (0 != n.find("/tmp"))) {
-            m_name = "/tmp" + m_name;
+        // Define filename for timestamping.
+        if (0 != n.find("/tmp")) {
+            m_nameForTimeStamping = "/tmp" + m_name;
+
+            // For NetBSD and OpenBSD or for the SysV-based implementation, we put all token files to /tmp.
+            if (!m_usePOSIX) {
+                m_name = m_nameForTimeStamping;
+            }
         }
 #endif
 
-        m_name += n;
-        if (m_name.size() > MAX_LENGTH_NAME) {
-            m_name = m_name.substr(0, MAX_LENGTH_NAME);
+        // Name of the shared memory.
+        {
+            m_name += n;
+            if (m_name.size() > MAX_LENGTH_NAME) {
+                m_name = m_name.substr(0, MAX_LENGTH_NAME);
+            }
+        }
+
+        // Name of the file for timestamping.
+        {
+            m_nameForTimeStamping += n;
+            if (m_nameForTimeStamping.size() > MAX_LENGTH_NAME) {
+                m_nameForTimeStamping = m_nameForTimeStamping.substr(0, MAX_LENGTH_NAME);
+            }
         }
 
 #ifdef WIN32
@@ -14000,6 +15362,10 @@ inline SharedMemory::~SharedMemory() noexcept {
 #endif
 }
 
+inline bool SharedMemory::isLocked() const noexcept {
+    return m_isLocked.load();
+}
+
 inline void SharedMemory::lock() noexcept {
 #ifdef WIN32
     lockWIN32();
@@ -14010,6 +15376,7 @@ inline void SharedMemory::lock() noexcept {
         lockSysV();
     }
 #endif
+    m_isLocked.store(true);
 }
 
 inline void SharedMemory::unlock() noexcept {
@@ -14022,6 +15389,7 @@ inline void SharedMemory::unlock() noexcept {
         unlockSysV();
     }
 #endif
+    m_isLocked.store(false);
 }
 
 inline void SharedMemory::wait() noexcept {
@@ -14046,6 +15414,71 @@ inline void SharedMemory::notifyAll() noexcept {
         notifyAllSysV();
     }
 #endif
+}
+
+inline bool SharedMemory::setTimeStamp(const cluon::data::TimeStamp &ts) noexcept {
+    bool retVal{false};
+
+#ifdef WIN32
+    (void)ts;
+#else
+    if ((retVal = isLocked())) {
+#ifdef __APPLE__
+        struct timeval accessedTime;
+        accessedTime.tv_sec = 0;
+        accessedTime.tv_usec = 0;
+
+        struct timeval modifiedTime;
+        modifiedTime.tv_sec = ts.seconds();
+        modifiedTime.tv_usec = ts.microseconds();
+
+        struct timeval times[2]{accessedTime, modifiedTime};
+        if (0 != futimes(m_fdForTimeStamping, times)) {
+            std::cerr << "[cluon::SharedMemory] Failed to set time stamp: '" << strerror(errno) << "' (" << errno << "): " << std::endl;
+            retVal = false;
+        }
+#else
+        struct timespec accessedTime;
+        accessedTime.tv_sec = 0;
+        accessedTime.tv_nsec = UTIME_OMIT;
+
+        struct timespec modifiedTime;
+        modifiedTime.tv_sec = ts.seconds();
+        modifiedTime.tv_nsec = ts.microseconds()*1000;
+
+        struct timespec times[2]{accessedTime, modifiedTime};
+        if (0 != futimens(m_fdForTimeStamping, times)) {
+            std::cerr << "[cluon::SharedMemory] Failed to set time stamp: '" << strerror(errno) << "' (" << errno << "): " << std::endl; // LCOV_EXCL_LINE
+            retVal = false; // LCOV_EXCL_LINE
+        }
+#endif
+    }
+#endif
+
+    return retVal;
+}
+
+inline std::pair<bool, cluon::data::TimeStamp> SharedMemory::getTimeStamp() noexcept {
+    bool retVal{false};
+    cluon::data::TimeStamp sampleTimeStamp;
+
+#ifndef WIN32
+    if ((retVal = isLocked())) {
+        struct stat fileStatus;
+        auto r = fstat(m_fdForTimeStamping, &fileStatus);
+        if (0 == r) {
+#ifdef __APPLE__
+            sampleTimeStamp.seconds(static_cast<int32_t>(fileStatus.st_mtimespec.tv_sec))
+                           .microseconds(static_cast<int32_t>(fileStatus.st_mtimespec.tv_nsec/1000));
+#else
+            sampleTimeStamp.seconds(static_cast<int32_t>(fileStatus.st_mtim.tv_sec))
+                           .microseconds(static_cast<int32_t>(fileStatus.st_mtim.tv_nsec/1000));
+#endif
+        }
+    }
+#endif
+
+    return std::make_pair(retVal, sampleTimeStamp);
 }
 
 inline bool SharedMemory::valid() noexcept {
@@ -14280,8 +15713,9 @@ inline void SharedMemory::initPOSIX() noexcept {
 
     m_fd = ::shm_open(m_name.c_str(), flags, S_IRUSR | S_IWUSR);
     if (-1 == m_fd) {
-        std::cerr << "[cluon::SharedMemory (POSIX)] Failed to open shared memory '" << m_name << "': " << ::strerror(errno) << " (" << errno << ")"
-                  << std::endl;
+// clang-format off
+        std::cerr << "[cluon::SharedMemory (POSIX)] Failed to open shared memory '" << m_name << "': " << ::strerror(errno) << " (" << errno << ")" << std::endl;
+// clang-format on
         // Try to remove existing shared memory segment and try again.
         if ((flags & O_CREAT) == O_CREAT) {
             std::clog << "[cluon::SharedMemory (POSIX)] Trying to remove existing shared memory '" << m_name << "' and trying again... ";
@@ -14304,9 +15738,9 @@ inline void SharedMemory::initPOSIX() noexcept {
         if (0 < m_size) {
             retVal = (0 == ::ftruncate(m_fd, static_cast<off_t>(sizeof(SharedMemoryHeader) + m_size)));
             if (!retVal) {
-                std::cerr << "[cluon::SharedMemory (POSIX)] Failed to truncate '" << m_name << "': " // LCOV_EXCL_LINE
-                          << ::strerror(errno) << " (" << errno << ")" // LCOV_EXCL_LINE
-                          << std::endl; // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+                std::cerr << "[cluon::SharedMemory (POSIX)] Failed to truncate '" << m_name << "': " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
             }
         }
 
@@ -14352,9 +15786,9 @@ inline void SharedMemory::initPOSIX() noexcept {
 
                     // Now, as we know the real size, unmap the first mapping that did not know the size.
                     if (::munmap(m_sharedMemory, sizeof(SharedMemoryHeader))) {
-                        std::cerr << "[cluon::SharedMemory (POSIX)] Failed to unmap shared memory: " // LCOV_EXCL_LINE
-                                  << ::strerror(errno) << " (" << errno << ")" // LCOV_EXCL_LINE
-                                  << std::endl; // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+                        std::cerr << "[cluon::SharedMemory (POSIX)] Failed to unmap shared memory: " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
                     }
 
                     // Invalidate all pointers.
@@ -14367,9 +15801,10 @@ inline void SharedMemory::initPOSIX() noexcept {
                         m_sharedMemoryHeader = reinterpret_cast<SharedMemoryHeader *>(m_sharedMemory);
                     }
                 }
-            } else {                                                                                                                         // LCOV_EXCL_LINE
-                std::cerr << "[cluon::SharedMemory (POSIX)] Failed to map '" << m_name << "': " << ::strerror(errno) << " (" << errno << ")" // LCOV_EXCL_LINE
-                          << std::endl;                                                                                                      // LCOV_EXCL_LINE
+            } else { // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+                std::cerr << "[cluon::SharedMemory (POSIX)] Failed to map '" << m_name << "': " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
             }
 
             // If the shared memory segment is correctly available, store the pointer for the user data.
@@ -14382,16 +15817,33 @@ inline void SharedMemory::initPOSIX() noexcept {
                               << ::strerror(errno) << " (" << errno << ")" << std::endl;         // LCOV_EXCL_LINE
                 }
             }
-        } else {                                                                                                                               // LCOV_EXCL_LINE
-            if (-1 != m_fd) {                                                                                                                  // LCOV_EXCL_LINE
-                if (-1 == ::shm_unlink(m_name.c_str())) {                                                                                      // LCOV_EXCL_LINE
-                    std::cerr << "[cluon::SharedMemory (POSIX)] Failed to unlink shared memory: " << ::strerror(errno) << " (" << errno << ")" // LCOV_EXCL_LINE
-                              << std::endl;                                                                                                    // LCOV_EXCL_LINE
+        } else { // LCOV_EXCL_LINE
+            if (-1 != m_fd) { // LCOV_EXCL_LINE
+                if (-1 == ::shm_unlink(m_name.c_str())) { // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+                    std::cerr << "[cluon::SharedMemory (POSIX)] Failed to unlink shared memory: " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
                 }
             }
             m_fd = -1; // LCOV_EXCL_LINE
         }
     }
+#endif
+
+#ifdef __linux__
+    // On Linux, the POSIX shared memory lives in /dev/shm and we have a valid
+    // file descriptor to use for timestamping.
+    if (-1 != m_fd) {
+        m_fdForTimeStamping = m_fd;
+    }
+#else
+#if !defined(__NetBSD__) && !defined(__OpenBSD__)
+    // On *BSDs, the POSIX shared memory lives not in /dev/shm and we have
+    // need to use a separate file for timestamping.
+    if (-1 != m_fd) {
+        m_fdForTimeStamping = ::open(m_nameForTimeStamping.c_str(), O_CREAT|O_RDONLY, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+    }
+#endif
 #endif
 }
 
@@ -14404,12 +15856,23 @@ inline void SharedMemory::deinitPOSIX() noexcept {
         ::pthread_mutex_destroy(&(m_sharedMemoryHeader->__mutex));
     }
     if ((nullptr != m_sharedMemory) && ::munmap(m_sharedMemory, sizeof(SharedMemoryHeader) + m_size)) {
-        std::cerr << "[cluon::SharedMemory (POSIX)] Failed to unmap shared memory: " // LCOV_EXCL_LINE
-                  << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+        std::cerr << "[cluon::SharedMemory (POSIX)] Failed to unmap shared memory: " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
     }
     if (!m_hasOnlyAttachedToSharedMemory && (-1 != m_fd) && (-1 == ::shm_unlink(m_name.c_str()) && (ENOENT != errno))) {
-        std::cerr << "[cluon::SharedMemory (POSIX)] Failed to unlink shared memory: " // LCOV_EXCL_LINE
-                  << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+        std::cerr << "[cluon::SharedMemory (POSIX)] Failed to unlink shared memory: " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
+    }
+#endif
+
+#ifndef __linux__
+    // On *BSDs, the POSIX shared memory lives not in /dev/shm and we have
+    // used a separate file for timestamping.
+    if (-1 != m_fdForTimeStamping) {
+        ::close(m_fdForTimeStamping);
+        ::unlink(m_nameForTimeStamping.c_str());
     }
 #endif
 }
@@ -14419,11 +15882,10 @@ inline void SharedMemory::lockPOSIX() noexcept {
     if (nullptr != m_sharedMemoryHeader) {
         auto retVal = ::pthread_mutex_lock(&(m_sharedMemoryHeader->__mutex));
         if (EOWNERDEAD == retVal) {
-            std::cerr << "[cluon::SharedMemory (POSIX)] pthread_mutex_lock returned for EOWNERDEAD for mutex in shared memory '" << m_name // LCOV_EXCL_LINE
-                      << "': " << ::strerror(errno)                                                                                        // LCOV_EXCL_LINE
-                      << " (" << errno << ")" << std::endl;                                                                                // LCOV_EXCL_LINE
-        }
-        else if (0 != retVal) {
+// clang-format off // LCOV_EXCL_LINE
+            std::cerr << "[cluon::SharedMemory (POSIX)] pthread_mutex_lock returned for EOWNERDEAD for mutex in shared memory '" << m_name << "': " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
+        } else if (0 != retVal) {
             m_broken.store(true); // LCOV_EXCL_LINE
         }
     }
@@ -14487,9 +15949,7 @@ inline void SharedMemory::initSysV() noexcept {
         // set of semaphores and shared memory areas.
         std::fstream tokenFile(m_name.c_str(), std::ios::in);
         if (tokenFile.good()) {
-            std::cerr << "[cluon::SharedMemory (SysV)] Token file '" << m_name << "' already exists; need to clean up existing SysV-based shared memory."
-                      << std::endl;
-            // Cleaning up will be tried in the code below.
+            // Existing tokenFile found. Cleaning up will be tried in the code below.
         }
         tokenFile.close();
 
@@ -14515,7 +15975,9 @@ inline void SharedMemory::initSysV() noexcept {
     if (tokenFileExisting) {
         m_shmKeySysV = ::ftok(m_name.c_str(), ID_SHM);
         if (-1 == m_shmKeySysV) {
+// clang-format off // LCOV_EXCL_LINE
             std::cerr << "[cluon::SharedMemory (SysV)] Key for shared memory could not be created: " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
         } else {
             if (!m_hasOnlyAttachedToSharedMemory) {
                 // The caller wants to create a shared memory segment.
@@ -14525,19 +15987,18 @@ inline void SharedMemory::initSysV() noexcept {
                 // IPC_CREAT flag. On a clean environment, this call must fail
                 // as there should not be any shared memory segments left.
                 {
-                    int orphanedSharedMemoryIDSysV = ::shmget(m_shmKeySysV, 0, S_IRUSR | S_IWUSR);
+                    int orphanedSharedMemoryIDSysV = ::shmget(m_shmKeySysV, 0, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
                     if (!(orphanedSharedMemoryIDSysV < 0)) {
-                        std::cerr << "[cluon::SharedMemory (SysV)] Existing shared memory (0x" << std::hex << m_shmKeySysV << std::dec << ") found; ";
                         if (::shmctl(orphanedSharedMemoryIDSysV, IPC_RMID, 0)) {
-                            std::cerr << "removing failed." << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
-                        } else {
-                            std::cerr << "successfully removed." << std::endl;
+// clang-format off // LCOV_EXCL_LINE
+                            std::cerr << "[cluon::SharedMemory (SysV)] Existing shared memory (0x" << std::hex << m_shmKeySysV << std::dec << ") found; removing failed." << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
                         }
                     }
                 }
 
                 // Now, create the shared memory segment.
-                m_sharedMemoryIDSysV = ::shmget(m_shmKeySysV, m_size, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
+                m_sharedMemoryIDSysV = ::shmget(m_shmKeySysV, m_size, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
                 if (-1 != m_sharedMemoryIDSysV) {
                     m_sharedMemory = reinterpret_cast<char *>(::shmat(m_sharedMemoryIDSysV, nullptr, 0));
 #pragma GCC diagnostic push
@@ -14545,17 +16006,19 @@ inline void SharedMemory::initSysV() noexcept {
                     if ((void *)-1 != m_sharedMemory) {
                         m_userAccessibleSharedMemory = m_sharedMemory;
                     } else { // LCOV_EXCL_LINE
-                        std::cerr << "[cluon::SharedMemory (SysV)] Failed to attach to shared memory (0x" << std::hex << m_shmKeySysV << std::dec // LCOV_EXCL_LINE
-                                  << "): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+                        std::cerr << "[cluon::SharedMemory (SysV)] Failed to attach to shared memory (0x" << std::hex << m_shmKeySysV << std::dec << "): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
                     }
 #pragma GCC diagnostic pop
                 } else { // LCOV_EXCL_LINE
-                    std::cerr << "[cluon::SharedMemory (SysV)] Failed to get to shared memory (0x" << std::hex << m_shmKeySysV << std::dec // LCOV_EXCL_LINE
-                              << "): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+                    std::cerr << "[cluon::SharedMemory (SysV)] Failed to get to shared memory (0x" << std::hex << m_shmKeySysV << std::dec << "): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
                 }
             } else {
                 // The caller wants to attach to an existing shared memory segment.
-                m_sharedMemoryIDSysV = ::shmget(m_shmKeySysV, 0, S_IRUSR | S_IWUSR);
+                m_sharedMemoryIDSysV = ::shmget(m_shmKeySysV, 0, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
                 if (-1 != m_sharedMemoryIDSysV) {
                     struct shmid_ds info;
                     if (-1 != ::shmctl(m_sharedMemoryIDSysV, IPC_STAT, &info)) {
@@ -14566,17 +16029,20 @@ inline void SharedMemory::initSysV() noexcept {
                         if ((void *)-1 != m_sharedMemory) {
                             m_userAccessibleSharedMemory = m_sharedMemory;
                         } else { // LCOV_EXCL_LINE
-                            std::cerr << "[cluon::SharedMemory (SysV)] Failed to attach to shared memory (0x" << std::hex << m_shmKeySysV << std::dec // LCOV_EXCL_LINE
-                                      << "): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+                            std::cerr << "[cluon::SharedMemory (SysV)] Failed to attach to shared memory (0x" << std::hex << m_shmKeySysV << std::dec << "): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
                         }
 #pragma GCC diagnostic pop
                     } else { // LCOV_EXCL_LINE
-                        std::cerr << "[cluon::SharedMemory (SysV)] Could not read information about shared memory (0x" << std::hex << m_shmKeySysV << std::dec // LCOV_EXCL_LINE
-                                  << "): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+                        std::cerr << "[cluon::SharedMemory (SysV)] Could not read information about shared memory (0x" << std::hex << m_shmKeySysV << std::dec << "): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
                     }
                 } else { // LCOV_EXCL_LINE
-                    std::cerr << "[cluon::SharedMemory (SysV)] Failed to get shared memory (0x" << std::hex << m_shmKeySysV << std::dec // LCOV_EXCL_LINE
-                              << "): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+                    std::cerr << "[cluon::SharedMemory (SysV)] Failed to get shared memory (0x" << std::hex << m_shmKeySysV << std::dec << "): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
                 }
             }
         }
@@ -14584,7 +16050,9 @@ inline void SharedMemory::initSysV() noexcept {
         // Next, create the mutex (but only if the shared memory was acquired correctly.
         m_mutexKeySysV = ::ftok(m_name.c_str(), ID_SEM_AS_MUTEX);
         if (-1 == m_mutexKeySysV) {
+// clang-format off // LCOV_EXCL_LINE
             std::cerr << "[cluon::SharedMemory (SysV)] Key for mutex could not be created: " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
         }
         if ((-1 != m_shmKeySysV) && (-1 != m_mutexKeySysV) && (nullptr != m_userAccessibleSharedMemory)) {
             if (!m_hasOnlyAttachedToSharedMemory) {
@@ -14593,14 +16061,12 @@ inline void SharedMemory::initSysV() noexcept {
 
                 // First, try to remove the orphaned one.
                 {
-                    int orphanedMutexIDSysV = ::semget(m_mutexKeySysV, 0, S_IRUSR | S_IWUSR);
+                    int orphanedMutexIDSysV = ::semget(m_mutexKeySysV, 0, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
                     if (!(orphanedMutexIDSysV < 0)) {
-                        std::cerr << "[cluon::SharedMemory (SysV)] Existing semaphore (0x" << std::hex << m_mutexKeySysV << std::dec
-                                  << ", intended to use as mutex) found; ";
                         if (::semctl(orphanedMutexIDSysV, 0, IPC_RMID)) {
-                            std::cerr << "removing failed." << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
-                        } else {
-                            std::cerr << "successfully removed." << std::endl;
+// clang-format off // LCOV_EXCL_LINE
+                            std::cerr << "[cluon::SharedMemory (SysV)] Existing semaphore (0x" << std::hex << m_mutexKeySysV << std::dec << ", intended to use as mutex) found; removing failed." << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
                         }
                     }
                 }
@@ -14608,7 +16074,7 @@ inline void SharedMemory::initSysV() noexcept {
                 // Next, create the correct semaphore used as mutex.
                 {
                     constexpr int NSEMS{1};
-                    m_mutexIDSysV = ::semget(m_mutexKeySysV, NSEMS, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
+                    m_mutexIDSysV = ::semget(m_mutexKeySysV, NSEMS, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
                     if (-1 != m_mutexIDSysV) {
                         constexpr int NUMBER_OF_SEMAPHORE_TO_CONTROL{0};
                         constexpr int INITIAL_VALUE{1};
@@ -14619,20 +16085,23 @@ inline void SharedMemory::initSysV() noexcept {
 #pragma GCC diagnostic ignored "-Wclass-varargs"
 #endif
                         if (-1 == ::semctl(m_mutexIDSysV, NUMBER_OF_SEMAPHORE_TO_CONTROL, SETVAL, tmp)) {
-                            std::cerr << "[cluon::SharedMemory (SysV)] Failed to initialize semaphore (0x" << std::hex << m_mutexKeySysV << std::dec // LCOV_EXCL_LINE
-                                      << ", intended to use as mutex): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+                            std::cerr << "[cluon::SharedMemory (SysV)] Failed to initialize semaphore (0x" << std::hex << m_mutexKeySysV << std::dec << ", intended to use as mutex): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
                         }
 #pragma GCC diagnostic pop
                     } else { // LCOV_EXCL_LINE
-                        std::cerr << "[cluon::SharedMemory (SysV)] Failed to create semaphore (0x" << std::hex << m_mutexKeySysV << std::dec // LCOV_EXCL_LINE
-                                  << ", intended to use as mutex): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+                        std::cerr << "[cluon::SharedMemory (SysV)] Failed to create semaphore (0x" << std::hex << m_mutexKeySysV << std::dec << ", intended to use as mutex): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
                     }
                 }
             } else {
-                m_mutexIDSysV = ::semget(m_mutexKeySysV, 0, S_IRUSR | S_IWUSR);
+                m_mutexIDSysV = ::semget(m_mutexKeySysV, 0, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
                 if (-1 == m_mutexIDSysV) {
-                    std::cerr << "[cluon::SharedMemory (SysV)] Failed to get semaphore (0x" << std::hex << m_mutexKeySysV << std::dec // LCOV_EXCL_LINE
-                              << ", intended to use as mutex): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+                    std::cerr << "[cluon::SharedMemory (SysV)] Failed to get semaphore (0x" << std::hex << m_mutexKeySysV << std::dec << ", intended to use as mutex): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
                 }
             }
         }
@@ -14640,7 +16109,9 @@ inline void SharedMemory::initSysV() noexcept {
         // Next, create the condition variable (but only if the shared memory was acquired correctly.
         m_conditionKeySysV = ::ftok(m_name.c_str(), ID_SEM_AS_CONDITION);
         if (-1 == m_conditionKeySysV) {
+// clang-format off // LCOV_EXCL_LINE
             std::cerr << "[cluon::SharedMemory (SysV)] Key for condition could not be created: " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
         }
         if ((-1 != m_shmKeySysV) && (-1 != m_mutexKeySysV) && (-1 != m_conditionKeySysV) && (nullptr != m_userAccessibleSharedMemory)) {
             if (!m_hasOnlyAttachedToSharedMemory) {
@@ -14649,14 +16120,12 @@ inline void SharedMemory::initSysV() noexcept {
 
                 // First, try to remove the orphaned one.
                 {
-                    int orphanedConditionIDSysV = ::semget(m_conditionKeySysV, 0, S_IRUSR | S_IWUSR);
+                    int orphanedConditionIDSysV = ::semget(m_conditionKeySysV, 0, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
                     if (!(orphanedConditionIDSysV < 0)) {
-                        std::cerr << "[cluon::SharedMemory (SysV)] Existing semaphore (0x" << std::hex << m_conditionKeySysV << std::dec
-                                  << ", intended to use as condition variable) found; ";
                         if (::semctl(orphanedConditionIDSysV, 0, IPC_RMID)) {
-                            std::cerr << "removing failed." << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
-                        } else {
-                            std::cerr << "successfully removed." << std::endl;
+// clang-format off // LCOV_EXCL_LINE
+                            std::cerr << "[cluon::SharedMemory (SysV)] Existing semaphore (0x" << std::hex << m_conditionKeySysV << std::dec << ", intended to use as condition variable) found; removing failed." << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
                         }
                     }
                 }
@@ -14664,7 +16133,7 @@ inline void SharedMemory::initSysV() noexcept {
                 // Next, create the correct semaphore used as condition variable.
                 {
                     constexpr int NSEMS{1};
-                    m_conditionIDSysV = ::semget(m_conditionKeySysV, NSEMS, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
+                    m_conditionIDSysV = ::semget(m_conditionKeySysV, NSEMS, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
                     if (-1 != m_conditionIDSysV) {
                         constexpr int NUMBER_OF_SEMAPHORE_TO_CONTROL{0};
                         constexpr int INITIAL_VALUE{1};
@@ -14675,31 +16144,44 @@ inline void SharedMemory::initSysV() noexcept {
 #pragma GCC diagnostic ignored "-Wclass-varargs"
 #endif
                         if (-1 == ::semctl(m_conditionIDSysV, NUMBER_OF_SEMAPHORE_TO_CONTROL, SETVAL, tmp)) {
-                            std::cerr << "[cluon::SharedMemory (SysV)] Failed to initialize semaphore (0x" << std::hex << m_conditionKeySysV << std::dec // LCOV_EXCL_LINE
-                                      << ", intended to use as condition variable): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+                            std::cerr << "[cluon::SharedMemory (SysV)] Failed to initialize semaphore (0x" << std::hex << m_conditionKeySysV << std::dec << ", intended to use as condition variable): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
                         }
 #pragma GCC diagnostic pop
                     } else { // LCOV_EXCL_LINE
-                        std::cerr << "[cluon::SharedMemory (SysV)] Failed to create semaphore (0x" << std::hex << m_conditionKeySysV << std::dec // LCOV_EXCL_LINE
-                                  << ", intended to use as condition variable): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+                        std::cerr << "[cluon::SharedMemory (SysV)] Failed to create semaphore (0x" << std::hex << m_conditionKeySysV << std::dec << ", intended to use as condition variable): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
                     }
                 }
             } else {
-                m_conditionIDSysV = ::semget(m_conditionKeySysV, 0, S_IRUSR | S_IWUSR);
+                m_conditionIDSysV = ::semget(m_conditionKeySysV, 0, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
                 if (-1 == m_conditionIDSysV) {
-                    std::cerr << "[cluon::SharedMemory (SysV)] Failed to get semaphore (0x" << std::hex << m_conditionKeySysV << std::dec // LCOV_EXCL_LINE
-                              << ", intended to use as condition variable): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+                    std::cerr << "[cluon::SharedMemory (SysV)] Failed to get semaphore (0x" << std::hex << m_conditionKeySysV << std::dec << ", intended to use as condition variable): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
                 }
             }
         }
+    }
+
+    // If the shared memory is present, open the token file for the time stamping.
+    if (nullptr != m_sharedMemory) {
+        m_fdForTimeStamping = ::open(m_name.c_str(), O_RDONLY);
     }
 }
 
 inline void SharedMemory::deinitSysV() noexcept {
     if (nullptr != m_sharedMemory) {
+        // Close token file.
+        ::close(m_fdForTimeStamping);
+        m_fdForTimeStamping = -1;
+
         if (-1 == ::shmdt(m_sharedMemory)) {
-            std::cerr << "[cluon::SharedMemory (SysV)] Could not detach shared memory (0x" << std::hex << m_shmKeySysV << std::dec << "): " << ::strerror(errno) // LCOV_EXCL_LINE
-                      << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format off // LCOV_EXCL_LINE
+            std::cerr << "[cluon::SharedMemory (SysV)] Could not detach shared memory (0x" << std::hex << m_shmKeySysV << std::dec << "): " << ::strerror(errno) << " (" << errno << ")" << std::endl; // LCOV_EXCL_LINE
+// clang-format on // LCOV_EXCL_LINE
         }
     }
 
@@ -14834,7 +16316,8 @@ inline bool SharedMemory::validSysV() noexcept {
 /*
  * Boost Software License - Version 1.0
  *
- * Copyright 2015-2018 Kevin Wojniak
+ * Mustache v4.1
+ * Copyright 2015-2020 Kevin Wojniak
  *
  * Permission is hereby granted, free of charge, to any person or organization
  * obtaining a copy of the software and accompanying documentation covered by
@@ -14863,6 +16346,7 @@ inline bool SharedMemory::validSysV() noexcept {
 #define KAINJOW_MUSTACHE_HPP
 
 #include <cassert>
+#include <cctype>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -14876,11 +16360,11 @@ namespace mustache {
 template <typename string_type>
 string_type trim(const string_type& s) {
     auto it = s.begin();
-    while (it != s.end() && isspace(*it)) {
+    while (it != s.end() && std::isspace(*it)) {
         it++;
     }
     auto rit = s.rbegin();
-    while (rit.base() != it && isspace(*rit)) {
+    while (rit.base() != it && std::isspace(*rit)) {
         rit++;
     }
     return {it, rit.base()};
@@ -15158,6 +16642,12 @@ public:
     }
 
     // Object data
+    bool is_empty_object() const {
+        return is_object() && obj_->empty();
+    }
+    bool is_non_empty_object() const {
+        return is_object() && !obj_->empty();
+    }
     void set(const string_type& name, const basic_data& var) {
         if (is_object()) {
             auto it = obj_->find(name);
@@ -15250,6 +16740,7 @@ const string_type delimiter_set<string_type>::default_end(2, '}');
 template <typename string_type>
 class basic_context {
 public:
+    virtual ~basic_context() = default;
     virtual void push(const basic_data<string_type>* data) = 0;
     virtual void pop() = 0;
 
@@ -15274,7 +16765,7 @@ public:
     virtual void pop() override {
         items_.erase(items_.begin());
     }
-    
+
     virtual const basic_data<string_type>* get(const string_type& name) const override {
         // process {{.}} name
         if (name.size() == 1 && name.at(0) == '.') {
@@ -15324,6 +16815,380 @@ private:
     std::vector<const basic_data<string_type>*> items_;
 };
 
+template <typename string_type>
+class line_buffer_state {
+public:
+    string_type data;
+    bool contained_section_tag = false;
+
+    bool is_empty_or_contains_only_whitespace() const {
+        for (const auto ch : data) {
+            // don't look at newlines
+            if (ch != ' ' && ch != '\t') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void clear() {
+        data.clear();
+        contained_section_tag = false;
+    }
+};
+
+template <typename string_type>
+class context_internal {
+public:
+    basic_context<string_type>& ctx;
+    delimiter_set<string_type> delim_set;
+    line_buffer_state<string_type> line_buffer;
+
+    context_internal(basic_context<string_type>& a_ctx)
+        : ctx(a_ctx)
+    {
+    }
+};
+
+enum class tag_type {
+    text,
+    variable,
+    unescaped_variable,
+    section_begin,
+    section_end,
+    section_begin_inverted,
+    comment,
+    partial,
+    set_delimiter,
+};
+
+template <typename string_type>
+class mstch_tag /* gcc doesn't allow "tag tag;" so rename the class :( */ {
+public:
+    string_type name;
+    tag_type type = tag_type::text;
+    std::shared_ptr<string_type> section_text;
+    std::shared_ptr<delimiter_set<string_type>> delim_set;
+    bool is_section_begin() const {
+        return type == tag_type::section_begin || type == tag_type::section_begin_inverted;
+    }
+    bool is_section_end() const {
+        return type == tag_type::section_end;
+    }
+};
+
+template <typename string_type>
+class context_pusher {
+public:
+    context_pusher(context_internal<string_type>& ctx, const basic_data<string_type>* data)
+        : ctx_(ctx)
+    {
+        ctx.ctx.push(data);
+    }
+    ~context_pusher() {
+        ctx_.ctx.pop();
+    }
+    context_pusher(const context_pusher&) = delete;
+    context_pusher& operator= (const context_pusher&) = delete;
+private:
+    context_internal<string_type>& ctx_;
+};
+
+template <typename string_type>
+class component {
+private:
+    using string_size_type = typename string_type::size_type;
+
+public:
+    string_type text;
+    mstch_tag<string_type> tag;
+    std::vector<component> children;
+    string_size_type position = string_type::npos;
+
+    enum class walk_control {
+        walk, // "continue" is reserved :/
+        stop,
+        skip,
+    };
+    using walk_callback = std::function<walk_control(component&)>;
+
+    component() {}
+    component(const string_type& t, string_size_type p) : text(t), position(p) {}
+
+    bool is_text() const {
+        return tag.type == tag_type::text;
+    }
+
+    bool is_newline() const {
+        return is_text() && ((text.size() == 2 && text[0] == '\r' && text[1] == '\n') ||
+        (text.size() == 1 && (text[0] == '\n' || text[0] == '\r')));
+    }
+
+    bool is_non_newline_whitespace() const {
+        return is_text() && !is_newline() && text.size() == 1 && (text[0] == ' ' || text[0] == '\t');
+    }
+
+    void walk_children(const walk_callback& callback) {
+        for (auto& child : children) {
+            if (child.walk(callback) != walk_control::walk) {
+                break;
+            }
+        }
+    }
+
+private:
+    walk_control walk(const walk_callback& callback) {
+        walk_control control{callback(*this)};
+        if (control == walk_control::stop) {
+            return control;
+        } else if (control == walk_control::skip) {
+            return walk_control::walk;
+        }
+        for (auto& child : children) {
+            control = child.walk(callback);
+            if (control == walk_control::stop) {
+                return control;
+            }
+        }
+        return control;
+    }
+};
+
+template <typename string_type>
+class parser {
+public:
+    parser(const string_type& input, context_internal<string_type>& ctx, component<string_type>& root_component, string_type& error_message)
+    {
+        parse(input, ctx, root_component, error_message);
+    }
+
+private:
+    void parse(const string_type& input, context_internal<string_type>& ctx, component<string_type>& root_component, string_type& error_message) const {
+        using string_size_type = typename string_type::size_type;
+        using streamstring = std::basic_ostringstream<typename string_type::value_type>;
+
+        const string_type brace_delimiter_end_unescaped(3, '}');
+        const string_size_type input_size{input.size()};
+
+        bool current_delimiter_is_brace{ctx.delim_set.is_default()};
+
+        std::vector<component<string_type>*> sections{&root_component};
+        std::vector<string_size_type> section_starts;
+        string_type current_text;
+        string_size_type current_text_position = -1;
+
+        current_text.reserve(input_size);
+
+        const auto process_current_text = [&current_text, &current_text_position, &sections]() {
+            if (!current_text.empty()) {
+                const component<string_type> comp{current_text, current_text_position};
+                sections.back()->children.push_back(comp);
+                current_text.clear();
+                current_text_position = -1;
+            }
+        };
+
+        const std::vector<string_type> whitespace{
+            string_type(1, '\r') + string_type(1, '\n'),
+            string_type(1, '\n'),
+            string_type(1, '\r'),
+            string_type(1, ' '),
+            string_type(1, '\t'),
+        };
+
+        for (string_size_type input_position = 0; input_position != input_size;) {
+            bool parse_tag = false;
+
+            if (input.compare(input_position, ctx.delim_set.begin.size(), ctx.delim_set.begin) == 0) {
+                process_current_text();
+
+                // Tag start delimiter
+                parse_tag = true;
+            } else {
+                bool parsed_whitespace = false;
+                for (const auto& whitespace_text : whitespace) {
+                    if (input.compare(input_position, whitespace_text.size(), whitespace_text) == 0) {
+                        process_current_text();
+
+                        const component<string_type> comp{whitespace_text, input_position};
+                        sections.back()->children.push_back(comp);
+                        input_position += whitespace_text.size();
+
+                        parsed_whitespace = true;
+                        break;
+                    }
+                }
+
+                if (!parsed_whitespace) {
+                    if (current_text.empty()) {
+                        current_text_position = input_position;
+                    }
+                    current_text.append(1, input[input_position]);
+                    input_position++;
+                }
+            }
+
+            if (!parse_tag) {
+                continue;
+            }
+
+            // Find the next tag start delimiter
+            const string_size_type tag_location_start = input_position;
+
+            // Find the next tag end delimiter
+            string_size_type tag_contents_location{tag_location_start + ctx.delim_set.begin.size()};
+            const bool tag_is_unescaped_var{current_delimiter_is_brace && tag_location_start != (input_size - 2) && input.at(tag_contents_location) == ctx.delim_set.begin.at(0)};
+            const string_type& current_tag_delimiter_end{tag_is_unescaped_var ? brace_delimiter_end_unescaped : ctx.delim_set.end};
+            const auto current_tag_delimiter_end_size = current_tag_delimiter_end.size();
+            if (tag_is_unescaped_var) {
+                ++tag_contents_location;
+            }
+            const string_size_type tag_location_end{input.find(current_tag_delimiter_end, tag_contents_location)};
+            if (tag_location_end == string_type::npos) {
+                streamstring ss;
+                ss << "Unclosed tag at " << tag_location_start;
+                error_message.assign(ss.str());
+                return;
+            }
+
+            // Parse tag
+            const string_type tag_contents{trim(string_type{input, tag_contents_location, tag_location_end - tag_contents_location})};
+            component<string_type> comp;
+            if (!tag_contents.empty() && tag_contents[0] == '=') {
+                if (!parse_set_delimiter_tag(tag_contents, ctx.delim_set)) {
+                    streamstring ss;
+                    ss << "Invalid set delimiter tag at " << tag_location_start;
+                    error_message.assign(ss.str());
+                    return;
+                }
+                current_delimiter_is_brace = ctx.delim_set.is_default();
+                comp.tag.type = tag_type::set_delimiter;
+                comp.tag.delim_set.reset(new delimiter_set<string_type>(ctx.delim_set));
+            }
+            if (comp.tag.type != tag_type::set_delimiter) {
+                parse_tag_contents(tag_is_unescaped_var, tag_contents, comp.tag);
+            }
+            comp.position = tag_location_start;
+            sections.back()->children.push_back(comp);
+
+            // Start next search after this tag
+            input_position = tag_location_end + current_tag_delimiter_end_size;
+
+            // Push or pop sections
+            if (comp.tag.is_section_begin()) {
+                sections.push_back(&sections.back()->children.back());
+                section_starts.push_back(input_position);
+            } else if (comp.tag.is_section_end()) {
+                if (sections.size() == 1) {
+                    streamstring ss;
+                    ss << "Unopened section \"" << comp.tag.name << "\" at " << comp.position;
+                    error_message.assign(ss.str());
+                    return;
+                }
+                sections.back()->tag.section_text.reset(new string_type(input.substr(section_starts.back(), tag_location_start - section_starts.back())));
+                sections.pop_back();
+                section_starts.pop_back();
+            }
+        }
+
+        process_current_text();
+
+        // Check for sections without an ending tag
+        root_component.walk_children([&error_message](component<string_type>& comp) -> typename component<string_type>::walk_control {
+            if (!comp.tag.is_section_begin()) {
+                return component<string_type>::walk_control::walk;
+            }
+            if (comp.children.empty() || !comp.children.back().tag.is_section_end() || comp.children.back().tag.name != comp.tag.name) {
+                streamstring ss;
+                ss << "Unclosed section \"" << comp.tag.name << "\" at " << comp.position;
+                error_message.assign(ss.str());
+                return component<string_type>::walk_control::stop;
+            }
+            comp.children.pop_back(); // remove now useless end section component
+            return component<string_type>::walk_control::walk;
+        });
+        if (!error_message.empty()) {
+            return;
+        }
+    }
+
+    bool is_set_delimiter_valid(const string_type& delimiter) const {
+        // "Custom delimiters may not contain whitespace or the equals sign."
+        for (const auto ch : delimiter) {
+            if (ch == '=' || std::isspace(ch)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool parse_set_delimiter_tag(const string_type& contents, delimiter_set<string_type>& delimiter_set) const {
+        // Smallest legal tag is "=X X="
+        if (contents.size() < 5) {
+            return false;
+        }
+        if (contents.back() != '=') {
+            return false;
+        }
+        const auto contents_substr = trim(contents.substr(1, contents.size() - 2));
+        const auto spacepos = contents_substr.find(' ');
+        if (spacepos == string_type::npos) {
+            return false;
+        }
+        const auto nonspace = contents_substr.find_first_not_of(' ', spacepos + 1);
+        assert(nonspace != string_type::npos);
+        const string_type begin = contents_substr.substr(0, spacepos);
+        const string_type end = contents_substr.substr(nonspace, contents_substr.size() - nonspace);
+        if (!is_set_delimiter_valid(begin) || !is_set_delimiter_valid(end)) {
+            return false;
+        }
+        delimiter_set.begin = begin;
+        delimiter_set.end = end;
+        return true;
+    }
+
+    void parse_tag_contents(bool is_unescaped_var, const string_type& contents, mstch_tag<string_type>& tag) const {
+        if (is_unescaped_var) {
+            tag.type = tag_type::unescaped_variable;
+            tag.name = contents;
+        } else if (contents.empty()) {
+            tag.type = tag_type::variable;
+            tag.name.clear();
+        } else {
+            switch (contents.at(0)) {
+                case '#':
+                    tag.type = tag_type::section_begin;
+                    break;
+                case '^':
+                    tag.type = tag_type::section_begin_inverted;
+                    break;
+                case '/':
+                    tag.type = tag_type::section_end;
+                    break;
+                case '>':
+                    tag.type = tag_type::partial;
+                    break;
+                case '&':
+                    tag.type = tag_type::unescaped_variable;
+                    break;
+                case '!':
+                    tag.type = tag_type::comment;
+                    break;
+                default:
+                    tag.type = tag_type::variable;
+                    break;
+            }
+            if (tag.type == tag_type::variable) {
+                tag.name = contents;
+            } else {
+                string_type name{contents};
+                name.erase(name.begin());
+                tag.name = trim(name);
+            }
+        }
+    }
+};
+
 template <typename StringType>
 class basic_mustache {
 public:
@@ -15332,16 +17197,16 @@ public:
     basic_mustache(const string_type& input)
         : basic_mustache() {
         context<string_type> ctx;
-        context_internal context{ctx};
-        parse(input, context);
+        context_internal<string_type> context{ctx};
+        parser<string_type> parser{input, context, root_component_, error_message_};
     }
 
     bool is_valid() const {
-        return errorMessage_.empty();
+        return error_message_.empty();
     }
-    
+
     const string_type& error_message() const {
-        return errorMessage_;
+        return error_message_;
     }
 
     using escape_handler = std::function<string_type(const string_type&)>;
@@ -15356,319 +17221,50 @@ public:
         });
         return stream;
     }
-    
+
     string_type render(const basic_data<string_type>& data) {
         std::basic_ostringstream<typename string_type::value_type> ss;
         return render(data, ss).str();
     }
 
-    string_type render(basic_context<string_type>& ctx) {
-        std::basic_ostringstream<typename string_type::value_type> ss;
-        context_internal context{ctx};
-        render([&ss](const string_type& str) {
-            ss << str;
+    template <typename stream_type>
+    stream_type& render(basic_context<string_type>& ctx, stream_type& stream) {
+        context_internal<string_type> context{ctx};
+        render([&stream](const string_type& str) {
+            stream << str;
         }, context);
-        return ss.str();
+        return stream;
     }
 
-    using RenderHandler = std::function<void(const string_type&)>;
-    void render(const basic_data<string_type>& data, const RenderHandler& handler) {
+    string_type render(basic_context<string_type>& ctx) {
+        std::basic_ostringstream<typename string_type::value_type> ss;
+        return render(ctx, ss).str();
+    }
+
+    using render_handler = std::function<void(const string_type&)>;
+    void render(const basic_data<string_type>& data, const render_handler& handler) {
         if (!is_valid()) {
             return;
         }
         context<string_type> ctx{&data};
-        context_internal context{ctx};
+        context_internal<string_type> context{ctx};
         render(handler, context);
     }
 
 private:
-    using StringSizeType = typename string_type::size_type;
-    
-    class Tag {
-    public:
-        enum class Type {
-            Invalid,
-            Variable,
-            UnescapedVariable,
-            SectionBegin,
-            SectionEnd,
-            SectionBeginInverted,
-            Comment,
-            Partial,
-            SetDelimiter,
-        };
-        string_type name;
-        Type type = Type::Invalid;
-        std::shared_ptr<string_type> sectionText;
-        std::shared_ptr<delimiter_set<string_type>> delimiterSet;
-        bool isSectionBegin() const {
-            return type == Type::SectionBegin || type == Type::SectionBeginInverted;
-        }
-        bool isSectionEnd() const {
-            return type == Type::SectionEnd;
-        }
-    };
-    
-    class component {
-    public:
-        string_type text;
-        Tag tag;
-        std::vector<component> children;
-        StringSizeType position = string_type::npos;
-        bool isText() const {
-            return tag.type == Tag::Type::Invalid;
-        }
-        component() {}
-        component(const string_type& t, StringSizeType p) : text(t), position(p) {}
-    };
-
-    class context_internal {
-    public:
-        basic_context<string_type>& ctx;
-        delimiter_set<string_type> delimiterSet;
-
-        context_internal(basic_context<string_type>& a_ctx)
-            : ctx(a_ctx)
-        {
-        }
-    };
-
-    class context_pusher {
-    public:
-        context_pusher(context_internal& ctx, const basic_data<string_type>* data) : ctx_(ctx) {
-            ctx.ctx.push(data);
-        }
-        ~context_pusher() {
-            ctx_.ctx.pop();
-        }
-        context_pusher(const context_pusher&) = delete;
-        context_pusher& operator= (const context_pusher&) = delete;
-    private:
-        context_internal& ctx_;
-    };
+    using string_size_type = typename string_type::size_type;
 
     basic_mustache()
         : escape_(html_escape<string_type>)
     {
     }
-    
-    basic_mustache(const string_type& input, context_internal& ctx)
+
+    basic_mustache(const string_type& input, context_internal<string_type>& ctx)
         : basic_mustache() {
-        parse(input, ctx);
+        parser<string_type> parser{input, ctx, root_component_, error_message_};
     }
 
-    void parse(const string_type& input, context_internal& ctx) {
-        using streamstring = std::basic_ostringstream<typename string_type::value_type>;
-        
-        const string_type braceDelimiterEndUnescaped(3, '}');
-        const StringSizeType inputSize{input.size()};
-        
-        bool currentDelimiterIsBrace{ctx.delimiterSet.is_default()};
-        
-        std::vector<component*> sections{&rootComponent_};
-        std::vector<StringSizeType> sectionStarts;
-        
-        StringSizeType inputPosition{0};
-        while (inputPosition != inputSize) {
-            
-            // Find the next tag start delimiter
-            const StringSizeType tagLocationStart{input.find(ctx.delimiterSet.begin, inputPosition)};
-            if (tagLocationStart == string_type::npos) {
-                // No tag found. Add the remaining text.
-                const component comp{{input, inputPosition, inputSize - inputPosition}, inputPosition};
-                sections.back()->children.push_back(comp);
-                break;
-            } else if (tagLocationStart != inputPosition) {
-                // Tag found, add text up to this tag.
-                const component comp{{input, inputPosition, tagLocationStart - inputPosition}, inputPosition};
-                sections.back()->children.push_back(comp);
-            }
-            
-            // Find the next tag end delimiter
-            StringSizeType tagContentsLocation{tagLocationStart + ctx.delimiterSet.begin.size()};
-            const bool tagIsUnescapedVar{currentDelimiterIsBrace && tagLocationStart != (inputSize - 2) && input.at(tagContentsLocation) == ctx.delimiterSet.begin.at(0)};
-            const string_type& currentTagDelimiterEnd{tagIsUnescapedVar ? braceDelimiterEndUnescaped : ctx.delimiterSet.end};
-            const auto currentTagDelimiterEndSize = currentTagDelimiterEnd.size();
-            if (tagIsUnescapedVar) {
-                ++tagContentsLocation;
-            }
-            StringSizeType tagLocationEnd{input.find(currentTagDelimiterEnd, tagContentsLocation)};
-            if (tagLocationEnd == string_type::npos) {
-                streamstring ss;
-                ss << "Unclosed tag at " << tagLocationStart;
-                errorMessage_.assign(ss.str());
-                return;
-            }
-            
-            // Parse tag
-            const string_type tagContents{trim(string_type{input, tagContentsLocation, tagLocationEnd - tagContentsLocation})};
-            component comp;
-            if (!tagContents.empty() && tagContents[0] == '=') {
-                if (!parseSetDelimiterTag(tagContents, ctx.delimiterSet)) {
-                    streamstring ss;
-                    ss << "Invalid set delimiter tag at " << tagLocationStart;
-                    errorMessage_.assign(ss.str());
-                    return;
-                }
-                currentDelimiterIsBrace = ctx.delimiterSet.is_default();
-                comp.tag.type = Tag::Type::SetDelimiter;
-                comp.tag.delimiterSet.reset(new delimiter_set<string_type>(ctx.delimiterSet));
-            }
-            if (comp.tag.type != Tag::Type::SetDelimiter) {
-                parseTagContents(tagIsUnescapedVar, tagContents, comp.tag);
-            }
-            comp.position = tagLocationStart;
-            sections.back()->children.push_back(comp);
-            
-            // Start next search after this tag
-            inputPosition = tagLocationEnd + currentTagDelimiterEndSize;
-
-            // Push or pop sections
-            if (comp.tag.isSectionBegin()) {
-                sections.push_back(&sections.back()->children.back());
-                sectionStarts.push_back(inputPosition);
-            } else if (comp.tag.isSectionEnd()) {
-                if (sections.size() == 1) {
-                    streamstring ss;
-                    ss << "Unopened section \"" << comp.tag.name << "\" at " << comp.position;
-                    errorMessage_.assign(ss.str());
-                    return;
-                }
-                sections.back()->tag.sectionText.reset(new string_type(input.substr(sectionStarts.back(), tagLocationStart - sectionStarts.back())));
-                sections.pop_back();
-                sectionStarts.pop_back();
-            }
-        }
-        
-        // Check for sections without an ending tag
-        walk([this](component& comp) -> WalkControl {
-            if (!comp.tag.isSectionBegin()) {
-                return WalkControl::Continue;
-            }
-            if (comp.children.empty() || !comp.children.back().tag.isSectionEnd() || comp.children.back().tag.name != comp.tag.name) {
-                streamstring ss;
-                ss << "Unclosed section \"" << comp.tag.name << "\" at " << comp.position;
-                errorMessage_.assign(ss.str());
-                return WalkControl::Stop;
-            }
-            comp.children.pop_back(); // remove now useless end section component
-            return WalkControl::Continue;
-        });
-        if (!errorMessage_.empty()) {
-            return;
-        }
-    }
-    
-    enum class WalkControl {
-        Continue,
-        Stop,
-        Skip,
-    };
-    using WalkCallback = std::function<WalkControl(component&)>;
-    
-    void walk(const WalkCallback& callback) {
-        walkChildren(callback, rootComponent_);
-    }
-
-    void walkChildren(const WalkCallback& callback, component& comp) {
-        for (auto& childComp : comp.children) {
-            if (walkComponent(callback, childComp) != WalkControl::Continue) {
-                break;
-            }
-        }
-    }
-    
-    WalkControl walkComponent(const WalkCallback& callback, component& comp) {
-        WalkControl control{callback(comp)};
-        if (control == WalkControl::Stop) {
-            return control;
-        } else if (control == WalkControl::Skip) {
-            return WalkControl::Continue;
-        }
-        for (auto& childComp : comp.children) {
-            control = walkComponent(callback, childComp);
-            assert(control == WalkControl::Continue);
-        }
-        return control;
-    }
-    
-    bool isSetDelimiterValid(const string_type& delimiter) {
-        // "Custom delimiters may not contain whitespace or the equals sign."
-        for (const auto ch : delimiter) {
-            if (ch == '=' || isspace(ch)) {
-                return false;
-            }
-        }
-        return true;
-    }
-    
-    bool parseSetDelimiterTag(const string_type& contents, delimiter_set<string_type>& delimiterSet) {
-        // Smallest legal tag is "=X X="
-        if (contents.size() < 5) {
-            return false;
-        }
-        if (contents.back() != '=') {
-            return false;
-        }
-        const auto contentsSubstr = trim(contents.substr(1, contents.size() - 2));
-        const auto spacepos = contentsSubstr.find(' ');
-        if (spacepos == string_type::npos) {
-            return false;
-        }
-        const auto nonspace = contentsSubstr.find_first_not_of(' ', spacepos + 1);
-        assert(nonspace != string_type::npos);
-        const string_type begin = contentsSubstr.substr(0, spacepos);
-        const string_type end = contentsSubstr.substr(nonspace, contentsSubstr.size() - nonspace);
-        if (!isSetDelimiterValid(begin) || !isSetDelimiterValid(end)) {
-            return false;
-        }
-        delimiterSet.begin = begin;
-        delimiterSet.end = end;
-        return true;
-    }
-    
-    void parseTagContents(bool isUnescapedVar, const string_type& contents, Tag& tag) {
-        if (isUnescapedVar) {
-            tag.type = Tag::Type::UnescapedVariable;
-            tag.name = contents;
-        } else if (contents.empty()) {
-            tag.type = Tag::Type::Variable;
-            tag.name.clear();
-        } else {
-            switch (contents.at(0)) {
-                case '#':
-                    tag.type = Tag::Type::SectionBegin;
-                    break;
-                case '^':
-                    tag.type = Tag::Type::SectionBeginInverted;
-                    break;
-                case '/':
-                    tag.type = Tag::Type::SectionEnd;
-                    break;
-                case '>':
-                    tag.type = Tag::Type::Partial;
-                    break;
-                case '&':
-                    tag.type = Tag::Type::UnescapedVariable;
-                    break;
-                case '!':
-                    tag.type = Tag::Type::Comment;
-                    break;
-                default:
-                    tag.type = Tag::Type::Variable;
-                    break;
-            }
-            if (tag.type == Tag::Type::Variable) {
-                tag.name = contents;
-            } else {
-                string_type name{contents};
-                name.erase(name.begin());
-                tag.name = trim(name);
-            }
-        }
-    }
-
-    string_type render(context_internal& ctx) {
+    string_type render(context_internal<string_type>& ctx) {
         std::basic_ostringstream<typename string_type::value_type> ss;
         render([&ss](const string_type& str) {
             ss << str;
@@ -15676,163 +17272,212 @@ private:
         return ss.str();
     }
 
-    void render(const RenderHandler& handler, context_internal& ctx) {
-        walk([&handler, &ctx, this](component& comp) -> WalkControl {
-            return renderComponent(handler, ctx, comp);
+    void render(const render_handler& handler, context_internal<string_type>& ctx, bool root_renderer = true) {
+        root_component_.walk_children([&handler, &ctx, this](component<string_type>& comp) -> typename component<string_type>::walk_control {
+            return render_component(handler, ctx, comp);
         });
+        // process the last line, but only for the top-level renderer
+        if (root_renderer) {
+            render_current_line(handler, ctx, nullptr);
+        }
     }
 
-    WalkControl renderComponent(const RenderHandler& handler, context_internal& ctx, component& comp) {
-        if (comp.isText()) {
-            handler(comp.text);
-            return WalkControl::Continue;
+    void render_current_line(const render_handler& handler, context_internal<string_type>& ctx, const component<string_type>* comp) const {
+        // We're at the end of a line, so check the line buffer state to see
+        // if the line had tags in it, and also if the line is now empty or
+        // contains whitespace only. if this situation is true, skip the line.
+        bool output = true;
+        if (ctx.line_buffer.contained_section_tag && ctx.line_buffer.is_empty_or_contains_only_whitespace()) {
+            output = false;
         }
-        
-        const Tag& tag{comp.tag};
+        if (output) {
+            handler(ctx.line_buffer.data);
+            if (comp) {
+                handler(comp->text);
+            }
+        }
+        ctx.line_buffer.clear();
+    }
+
+    void render_result(context_internal<string_type>& ctx, const string_type& text) const {
+        ctx.line_buffer.data.append(text);
+    }
+
+    typename component<string_type>::walk_control render_component(const render_handler& handler, context_internal<string_type>& ctx, component<string_type>& comp) {
+        if (comp.is_text()) {
+            if (comp.is_newline()) {
+                render_current_line(handler, ctx, &comp);
+            } else {
+                render_result(ctx, comp.text);
+            }
+            return component<string_type>::walk_control::walk;
+        }
+
+        const mstch_tag<string_type>& tag{comp.tag};
         const basic_data<string_type>* var = nullptr;
         switch (tag.type) {
-            case Tag::Type::Variable:
-            case Tag::Type::UnescapedVariable:
+            case tag_type::variable:
+            case tag_type::unescaped_variable:
                 if ((var = ctx.ctx.get(tag.name)) != nullptr) {
-                    if (!renderVariable(handler, var, ctx, tag.type == Tag::Type::Variable)) {
-                        return WalkControl::Stop;
+                    if (!render_variable(handler, var, ctx, tag.type == tag_type::variable)) {
+                        return component<string_type>::walk_control::stop;
                     }
                 }
                 break;
-            case Tag::Type::SectionBegin:
+            case tag_type::section_begin:
                 if ((var = ctx.ctx.get(tag.name)) != nullptr) {
                     if (var->is_lambda() || var->is_lambda2()) {
-                        if (!renderLambda(handler, var, ctx, RenderLambdaEscape::Optional, *comp.tag.sectionText, true)) {
-                            return WalkControl::Stop;
+                        if (!render_lambda(handler, var, ctx, render_lambda_escape::optional, *comp.tag.section_text, true)) {
+                            return component<string_type>::walk_control::stop;
                         }
                     } else if (!var->is_false() && !var->is_empty_list()) {
-                        renderSection(handler, ctx, comp, var);
+                        render_section(handler, ctx, comp, var);
                     }
                 }
-                return WalkControl::Skip;
-            case Tag::Type::SectionBeginInverted:
+                return component<string_type>::walk_control::skip;
+            case tag_type::section_begin_inverted:
                 if ((var = ctx.ctx.get(tag.name)) == nullptr || var->is_false() || var->is_empty_list()) {
-                    renderSection(handler, ctx, comp, var);
+                    render_section(handler, ctx, comp, var);
                 }
-                return WalkControl::Skip;
-            case Tag::Type::Partial:
+                return component<string_type>::walk_control::skip;
+            case tag_type::partial:
                 if ((var = ctx.ctx.get_partial(tag.name)) != nullptr && (var->is_partial() || var->is_string())) {
-                    const auto partial_result = var->is_partial() ? var->partial_value()() : var->string_value();
+                    const auto& partial_result = var->is_partial() ? var->partial_value()() : var->string_value();
                     basic_mustache tmpl{partial_result};
                     tmpl.set_custom_escape(escape_);
                     if (!tmpl.is_valid()) {
-                        errorMessage_ = tmpl.error_message();
+                        error_message_ = tmpl.error_message();
                     } else {
-                        tmpl.render(handler, ctx);
+                        tmpl.render(handler, ctx, false);
                         if (!tmpl.is_valid()) {
-                            errorMessage_ = tmpl.error_message();
+                            error_message_ = tmpl.error_message();
                         }
                     }
                     if (!tmpl.is_valid()) {
-                        return WalkControl::Stop;
+                        return component<string_type>::walk_control::stop;
                     }
                 }
                 break;
-            case Tag::Type::SetDelimiter:
-                ctx.delimiterSet = *comp.tag.delimiterSet;
+            case tag_type::set_delimiter:
+                ctx.delim_set = *comp.tag.delim_set;
                 break;
             default:
                 break;
         }
-        
-        return WalkControl::Continue;
+
+        return component<string_type>::walk_control::walk;
     }
 
-    enum class RenderLambdaEscape {
-        Escape,
-        Unescape,
-        Optional,
+    enum class render_lambda_escape {
+        escape,
+        unescape,
+        optional,
     };
-    
-    bool renderLambda(const RenderHandler& handler, const basic_data<string_type>* var, context_internal& ctx, RenderLambdaEscape escape, const string_type& text, bool parseWithSameContext) {
-        const typename basic_renderer<string_type>::type2 render2 = [this, &handler, var, &ctx, parseWithSameContext, escape](const string_type& text, bool escaped) {
-            const auto processTemplate = [this, &handler, var, &ctx, escape, escaped](basic_mustache& tmpl) -> string_type {
+
+    bool render_lambda(const render_handler& handler, const basic_data<string_type>* var, context_internal<string_type>& ctx, render_lambda_escape escape, const string_type& text, bool parse_with_same_context) {
+        const typename basic_renderer<string_type>::type2 render2 = [this, &ctx, parse_with_same_context, escape](const string_type& text, bool escaped) {
+            const auto process_template = [this, &ctx, escape, escaped](basic_mustache& tmpl) -> string_type {
                 if (!tmpl.is_valid()) {
-                    errorMessage_ = tmpl.error_message();
+                    error_message_ = tmpl.error_message();
                     return {};
                 }
-                const string_type str{tmpl.render(ctx)};
+                context_internal<string_type> render_ctx{ctx.ctx}; // start a new line_buffer
+                const auto str = tmpl.render(render_ctx);
                 if (!tmpl.is_valid()) {
-                    errorMessage_ = tmpl.error_message();
+                    error_message_ = tmpl.error_message();
                     return {};
                 }
-                bool doEscape = false;
+                bool do_escape = false;
                 switch (escape) {
-                    case RenderLambdaEscape::Escape:
-                        doEscape = true;
+                    case render_lambda_escape::escape:
+                        do_escape = true;
                         break;
-                    case RenderLambdaEscape::Unescape:
-                        doEscape = false;
+                    case render_lambda_escape::unescape:
+                        do_escape = false;
                         break;
-                    case RenderLambdaEscape::Optional:
-                        doEscape = escaped;
+                    case render_lambda_escape::optional:
+                        do_escape = escaped;
                         break;
                 }
-                return doEscape ? escape_(str) : str;
+                return do_escape ? escape_(str) : str;
             };
-            if (parseWithSameContext) {
+            if (parse_with_same_context) {
                 basic_mustache tmpl{text, ctx};
                 tmpl.set_custom_escape(escape_);
-                return processTemplate(tmpl);
+                return process_template(tmpl);
             }
             basic_mustache tmpl{text};
             tmpl.set_custom_escape(escape_);
-            return processTemplate(tmpl);
+            return process_template(tmpl);
         };
         const typename basic_renderer<string_type>::type1 render = [&render2](const string_type& text) {
             return render2(text, false);
         };
         if (var->is_lambda2()) {
             const basic_renderer<string_type> renderer{render, render2};
-            handler(var->lambda2_value()(text, renderer));
+            render_result(ctx, var->lambda2_value()(text, renderer));
         } else {
-            handler(render(var->lambda_value()(text)));
+            render_current_line(handler, ctx, nullptr);
+            render_result(ctx, render(var->lambda_value()(text)));
         }
-        return errorMessage_.empty();
+        return error_message_.empty();
     }
-    
-    bool renderVariable(const RenderHandler& handler, const basic_data<string_type>* var, context_internal& ctx, bool escaped) {
+
+    bool render_variable(const render_handler& handler, const basic_data<string_type>* var, context_internal<string_type>& ctx, bool escaped) {
         if (var->is_string()) {
-            const auto varstr = var->string_value();
-            handler(escaped ? escape_(varstr) : varstr);
+            const auto& varstr = var->string_value();
+            render_result(ctx, escaped ? escape_(varstr) : varstr);
         } else if (var->is_lambda()) {
-            const RenderLambdaEscape escapeOpt = escaped ? RenderLambdaEscape::Escape : RenderLambdaEscape::Unescape;
-            return renderLambda(handler, var, ctx, escapeOpt, {}, false);
+            const render_lambda_escape escape_opt = escaped ? render_lambda_escape::escape : render_lambda_escape::unescape;
+            return render_lambda(handler, var, ctx, escape_opt, {}, false);
         } else if (var->is_lambda2()) {
             using streamstring = std::basic_ostringstream<typename string_type::value_type>;
             streamstring ss;
             ss << "Lambda with render argument is not allowed for regular variables";
-            errorMessage_ = ss.str();
+            error_message_ = ss.str();
             return false;
         }
         return true;
     }
 
-    void renderSection(const RenderHandler& handler, context_internal& ctx, component& incomp, const basic_data<string_type>* var) {
-        const auto callback = [&handler, &ctx, this](component& comp) -> WalkControl {
-            return renderComponent(handler, ctx, comp);
+    void render_section(const render_handler& handler, context_internal<string_type>& ctx, component<string_type>& incomp, const basic_data<string_type>* var) {
+        const auto callback = [&handler, &ctx, this](component<string_type>& comp) -> typename component<string_type>::walk_control {
+            return render_component(handler, ctx, comp);
         };
         if (var && var->is_non_empty_list()) {
             for (const auto& item : var->list_value()) {
-                const context_pusher ctxpusher{ctx, &item};
-                walkChildren(callback, incomp);
+                // account for the section begin tag
+                ctx.line_buffer.contained_section_tag = true;
+
+                const context_pusher<string_type> ctxpusher{ctx, &item};
+                incomp.walk_children(callback);
+
+                // ctx may have been cleared. account for the section end tag
+                ctx.line_buffer.contained_section_tag = true;
             }
         } else if (var) {
-            const context_pusher ctxpusher{ctx, var};
-            walkChildren(callback, incomp);
+            // account for the section begin tag
+            ctx.line_buffer.contained_section_tag = true;
+
+            const context_pusher<string_type> ctxpusher{ctx, var};
+            incomp.walk_children(callback);
+
+            // ctx may have been cleared. account for the section end tag
+            ctx.line_buffer.contained_section_tag = true;
         } else {
-            walkChildren(callback, incomp);
+            // account for the section begin tag
+            ctx.line_buffer.contained_section_tag = true;
+
+            incomp.walk_children(callback);
+
+            // ctx may have been cleared. account for the section end tag
+            ctx.line_buffer.contained_section_tag = true;
         }
     }
 
 private:
-    string_type errorMessage_;
-    component rootComponent_;
+    string_type error_message_;
+    component<string_type> root_component_;
     escape_handler escape_;
 };
 
@@ -15856,18 +17501,9 @@ using dataw = basic_data<mustachew::string_type>;
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_METAMESSAGETOCPPTRANSFORMATOR_HPP
@@ -15917,18 +17553,9 @@ class LIBCLUON_API MetaMessageToCPPTransformator {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_METAMESSAGETOPROTOTRANSFORMATOR_HPP
@@ -15978,18 +17605,9 @@ class LIBCLUON_API MetaMessageToProtoTransformator {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/MetaMessageToCPPTransformator.hpp"
@@ -16145,6 +17763,20 @@ class LIB_API {{%MESSAGE%}} {
 
     public:
         template<class Visitor>
+        inline void accept(uint32_t fieldId, Visitor &visitor) {
+            (void)fieldId;
+            (void)visitor;
+//            visitor.preVisit(ID(), ShortName(), LongName());
+            {{#%FIELDS%}}
+            if ({{%FIELDIDENTIFIER%}} == fieldId) {
+                doVisit({{%FIELDIDENTIFIER%}}, std::move("{{%TYPE%}}"s), std::move("{{%NAME%}}"s), m_{{%NAME%}}, visitor);
+                return;
+            }
+            {{/%FIELDS%}}
+//            visitor.postVisit();
+        }
+
+        template<class Visitor>
         inline void accept(Visitor &visitor) {
             visitor.preVisit(ID(), ShortName(), LongName());
             {{#%FIELDS%}}
@@ -16296,18 +17928,9 @@ void MetaMessageToCPPTransformator::visit(const MetaMessage &mm) noexcept {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 //#include "cluon/MetaMessageToProtoTransformator.hpp"
@@ -16423,18 +18046,9 @@ void MetaMessageToProtoTransformator::visit(const MetaMessage &mm) noexcept {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_MSC_HPP
@@ -16524,18 +18138,9 @@ inline int32_t cluon_msc(int32_t argc, char **argv) {
 /*
  * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 // This test for a compiler definition is necessary to preserve single-file, header-only compability.
@@ -16551,20 +18156,11 @@ int32_t main(int32_t argc, char **argv) {
 #endif
 #ifdef HAVE_CLUON_REPLAY
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_REPLAY_HPP
@@ -16740,18 +18336,18 @@ inline int32_t cluon_replay(int32_t argc, char **argv) {
                     std::lock_guard<std::mutex> lck(playerCommandMutex);
                     if ( (playerCommand.command() == 1) || (playerCommand.command() == 2) ) {
                         play = !(2 == playerCommand.command()); // LCOV_EXCL_LINE
-                        std::clog << PROGRAM << ": Change state: " << +playerCommand.command() << ", play = " << play << std::endl;
+                        std::cerr << PROGRAM << ": Change state: " << +playerCommand.command() << ", play = " << play << std::endl;
                     }
 
                     if (3 == playerCommand.command()) {
-                        std::clog << PROGRAM << ": Change state: " << +playerCommand.command() << ", seekTo: " << playerCommand.seekTo() << std::endl;
+                        std::cerr << PROGRAM << ": Change state: " << +playerCommand.command() << ", seekTo: " << playerCommand.seekTo() << std::endl;
                         player.seekTo(playerCommand.seekTo());
                     }
 
                     if (4 == playerCommand.command()) {
                         play = false;
                         step = true;
-                        std::clog << PROGRAM << ": Change state: " << +playerCommand.command() << ", play = " << play << std::endl;
+                        std::cerr << PROGRAM << ": Change state: " << +playerCommand.command() << ", play = " << play << std::endl;
                     }
 
                     playCommandUpdate = false;
@@ -16792,20 +18388,11 @@ inline int32_t cluon_replay(int32_t argc, char **argv) {
 #endif
 
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 // This test for a compiler definition is necessary to preserve single-file, header-only compability.
@@ -16821,20 +18408,11 @@ int32_t main(int32_t argc, char **argv) {
 #endif
 #ifdef HAVE_CLUON_LIVEFEED
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_LIVEFEED_HPP
@@ -16844,13 +18422,14 @@ int32_t main(int32_t argc, char **argv) {
 //#include "cluon/MetaMessage.hpp"
 //#include "cluon/MessageParser.hpp"
 //#include "cluon/OD4Session.hpp"
+//#include "cluon/TerminateHandler.hpp"
 
 #include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <map>
+#include <unordered_map>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -16912,54 +18491,83 @@ inline int32_t cluon_livefeed(int32_t argc, char **argv) {
         }
 
         std::mutex mapOfLastEnvelopesMutex;
-        std::map<int32_t, std::map<uint32_t, cluon::data::Envelope> > mapOfLastEnvelopes;
+        std::unordered_map<int32_t, std::unordered_map<uint32_t, cluon::data::Envelope, cluon::UseUInt32ValueAsHashKey>, cluon::UseUInt32ValueAsHashKey> mapOfLastEnvelopes;
+        std::unordered_map<int32_t, std::unordered_map<uint32_t, float>, cluon::UseUInt32ValueAsHashKey> mapOfUpdateRates;
 
         cluon::OD4Session od4Session(static_cast<uint16_t>(std::stoi(commandlineArguments["cid"])),
-            [&](cluon::data::Envelope &&envelope) noexcept {
+            [&mapOfLastEnvelopesMutex, &mapOfLastEnvelopes, &mapOfUpdateRates](cluon::data::Envelope &&envelope) noexcept {
             std::lock_guard<std::mutex> lck(mapOfLastEnvelopesMutex);
 
-            // Update mapping for tupel (dataType, senderStamp) --> Envelope.
-            std::map<uint32_t, cluon::data::Envelope> entry = mapOfLastEnvelopes[envelope.dataType()];
-            entry[envelope.senderStamp()] = envelope;
-            mapOfLastEnvelopes[envelope.dataType()] = entry;
-
-            clearScreen();
-
-            const auto LAST_TIME_POINT{envelope.received().seconds() * 1000 * 1000 + envelope.received().microseconds()};
-
-            uint8_t y = 1;
-            const uint8_t x = 1;
-            for (auto e : mapOfLastEnvelopes) {
-                for (auto ee : e.second) {
-                    auto env = ee.second;
-                    std::stringstream sstr;
-
-                    sstr << "Envelope: " << std::setfill(' ') << std::setw(5) << env.dataType() << std::setw(0) << "/" << env.senderStamp() << "; " << "sent: " << formatTimeStamp(env.sent()) << "; sample: " << formatTimeStamp(env.sampleTimeStamp());
-                    if (scopeOfMetaMessages.count(env.dataType()) > 0) {
-                        sstr << "; " << scopeOfMetaMessages[env.dataType()].messageName();
-                    }
-                    else {
-                        sstr << "; unknown data type";
-                    }
-                    sstr << std::endl;
-
-                    const auto AGE{LAST_TIME_POINT - (env.received().seconds() * 1000 * 1000 + env.received().microseconds())};
-
-                    Color c = Color::DEFAULT;
-                    if (AGE <= 2 * 1000 * 1000) { c = Color::GREEN; }
-                    if (AGE > 2 * 1000 * 1000 && AGE <= 5 * 1000 * 1000) { c = Color::YELLOW; }
-                    if (AGE > 5 * 1000 * 1000) { c = Color::RED; }
-
-                    writeText(c, y++, x, sstr.str());
+            int64_t lastTimeStamp{0};
+            int64_t currentTimeStamp{0};
+            {
+                // Update mapping for tupel (dataType, senderStamp) --> Envelope.
+                auto entry = mapOfLastEnvelopes[envelope.dataType()];
+                if (0 != entry.count(envelope.senderStamp())) {
+                    lastTimeStamp = cluon::time::toMicroseconds(entry[envelope.senderStamp()].sampleTimeStamp()); // LCOV_EXCL_LINE
                 }
+                currentTimeStamp = cluon::time::toMicroseconds(envelope.sampleTimeStamp()); // LCOV_EXCL_LINE
+                if (currentTimeStamp != lastTimeStamp) {
+                    entry[envelope.senderStamp()] = envelope; // LCOV_EXCL_LINE
+                    mapOfLastEnvelopes[envelope.dataType()] = entry; // LCOV_EXCL_LINE
+                }
+            }
+            if (currentTimeStamp != lastTimeStamp) {
+                // Update mapping for tupel (dataType, senderStamp) --> deltaToLastEnvelope.
+                auto entry = mapOfUpdateRates[envelope.dataType()];
+
+                float average{0};
+                if (0 != entry.count(envelope.senderStamp())) {
+                    average = entry[envelope.senderStamp()]; // LCOV_EXCL_LINE
+                    float freq = (static_cast<float>(currentTimeStamp - lastTimeStamp))/(1000.0f*1000.0f); // LCOV_EXCL_LINE
+                    average = (1.0f/freq)*0.1f + 0.9f*average; // LCOV_EXCL_LINE
+                }
+                entry[envelope.senderStamp()] = average;
+                mapOfUpdateRates[envelope.dataType()] = entry;
             }
         });
 
         if (od4Session.isRunning()) {
-            using namespace std::literals::chrono_literals; // NOLINT
-            while (od4Session.isRunning()) {
-                std::this_thread::sleep_for(1s);
-            }
+            od4Session.timeTrigger(5, [&mapOfLastEnvelopesMutex, &mapOfLastEnvelopes, &mapOfUpdateRates, &scopeOfMetaMessages, &od4Session](){
+                std::lock_guard<std::mutex> lck(mapOfLastEnvelopesMutex);
+
+                if (!mapOfLastEnvelopes.empty()) {
+                    clearScreen();
+
+                    uint8_t y = 1;
+                    const uint8_t x = 1;
+                    for (auto e : mapOfLastEnvelopes) {
+                        for (auto ee : e.second) {
+                            auto env = ee.second;
+                            std::stringstream sstr;
+
+                            float freq{0};
+                            if ( (0 < mapOfUpdateRates.count(ee.second.dataType())) && (0 < mapOfUpdateRates[ee.second.dataType()].count(ee.second.senderStamp())) ) {
+                                freq = mapOfUpdateRates[ee.second.dataType()][ee.second.senderStamp()];
+                            }
+
+                            sstr << "Envelope: " << std::setfill(' ') << std::setw(5) << env.dataType() << std::setw(0) << "/" << env.senderStamp() << "; " << (static_cast<float>(static_cast<uint32_t>(freq*100.0f))/100.f) << " Hz; " << "sent: " << formatTimeStamp(env.sent()) << "; sample: " << formatTimeStamp(env.sampleTimeStamp());
+                            if (scopeOfMetaMessages.count(env.dataType()) > 0) {
+                                sstr << "; " << scopeOfMetaMessages[env.dataType()].messageName();
+                            }
+                            else {
+                                sstr << "; unknown data type";
+                            }
+                            sstr << std::endl;
+
+                            const auto AGE{cluon::time::deltaInMicroseconds(cluon::time::now(), env.received())};
+
+                            Color c = Color::DEFAULT;
+                            if (AGE <= 2 * 1000 * 1000) { c = Color::GREEN; }
+                            if (AGE > 2 * 1000 * 1000 && AGE <= 5 * 1000 * 1000) { c = Color::YELLOW; }
+                            if (AGE > 5 * 1000 * 1000) { c = Color::RED; }
+
+                            writeText(c, y++, x, sstr.str());
+                        }
+                    }
+                }
+                return od4Session.isRunning();
+            });
 
             retVal = 0;
         }
@@ -16970,20 +18578,11 @@ inline int32_t cluon_livefeed(int32_t argc, char **argv) {
 #endif
 
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 // This test for a compiler definition is necessary to preserve single-file, header-only compability.
@@ -16999,20 +18598,11 @@ int32_t main(int32_t argc, char **argv) {
 #endif
 #ifdef HAVE_CLUON_REC2CSV
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 #ifndef CLUON_REC2CSV_HPP
@@ -17047,6 +18637,8 @@ inline int32_t cluon_rec2csv(int32_t argc, char **argv) {
         // Maps of container-ID & sender-stamp.
         std::map<std::string, std::string> mapOfFilenames;
         std::map<std::string, std::string> mapOfEntries;
+        std::map<std::string, size_t> mapOfEntriesSizes;
+        std::map<std::string, bool> mapOfFilenamesThatHaveBeenReset;
 
         cluon::MessageParser mp;
         std::pair<std::vector<cluon::MetaMessage>, cluon::MessageParser::MessageParserErrorCodes> messageParserResult;
@@ -17068,14 +18660,33 @@ inline int32_t cluon_rec2csv(int32_t argc, char **argv) {
         if (fin.good()) {
             fin.close();
 
+            auto fileWriter = [argv, &mapOfFilenames, &mapOfEntries, &mapOfEntriesSizes, &mapOfFilenamesThatHaveBeenReset](){
+              for(auto entries : mapOfFilenames) {
+                  std::cerr << argv[0] << " writing '" << entries.second << ".csv'...";
+                  // Reset files on first access.
+                  std::ios_base::openmode openMode = std::ios::out|std::ios::binary|(mapOfFilenamesThatHaveBeenReset.count(entries.second) == 0 ? std::ios::trunc : std::ios::app);
+                  std::fstream fout(entries.second + ".csv", openMode);
+                  if (fout.good() && mapOfEntries.count(entries.first)) {
+                      const std::string tmp{mapOfEntries[entries.first]};
+                      fout.write(tmp.c_str(), static_cast<std::streamsize>(tmp.size()));
+                      // Reset memory.
+                      mapOfEntries[entries.first] = "";
+                      mapOfEntriesSizes[entries.first] = 0;
+                  }
+                  fout.close();
+                  mapOfFilenamesThatHaveBeenReset[entries.second] = true;
+                  std::cerr << " done." << std::endl;
+              }
+            };
+
             std::map<int32_t, cluon::MetaMessage> scope;
             for (const auto &e : messageParserResult.first) { scope[e.messageIdentifier()] = e; }
 
-            constexpr bool AUTOREWIND{false};
-            constexpr bool THREADING{false};
+            constexpr const bool AUTOREWIND{false};
+            constexpr const bool THREADING{false};
             cluon::Player player(commandlineArguments["rec"], AUTOREWIND, THREADING);
 
-
+            constexpr const size_t TEN_MB{10*1024*1024};
             uint32_t envelopeCounter{0};
             int32_t oldPercentage = -1;
             while (player.hasMoreData()) {
@@ -17120,13 +18731,16 @@ inline int32_t cluon_rec2csv(int32_t argc, char **argv) {
 
                             cluon::ToCSVVisitor csv(';', false);
                             gm.accept(csv);
-                            mapOfEntries[KEY] += stringtoolbox::split(timeStamps, '\n')[0] + csv.csv();
-                        }
+
+                            std::string entry{stringtoolbox::split(timeStamps, '\n')[0] + csv.csv()};
+                            mapOfEntries[KEY] += entry;
+                            mapOfEntriesSizes[KEY] += entry.size();
+                       }
                         else {
                             // Extract timestamps.
                             std::vector<std::string> timeStampsWithHeader;
                             {
-                                // Skip senderStamp (as it is in file name) and serialzedData.
+                                // Skip senderStamp (as it is in file name) and serializedData.
                                 cluon::ToCSVVisitor csv(';', true, { {1,false}, {2,false}, {3,true}, {4,true}, {5,true}, {6,false} });
                                 env.accept(csv);
                                 timeStampsWithHeader = stringtoolbox::split(csv.csv(), '\n');
@@ -17136,22 +18750,21 @@ inline int32_t cluon_rec2csv(int32_t argc, char **argv) {
                             gm.accept(csv);
 
                             std::vector<std::string> valuesWithHeader = stringtoolbox::split(csv.csv(), '\n');
+                            std::string entry{timeStampsWithHeader.at(0) + valuesWithHeader.at(0) + '\n' + timeStampsWithHeader.at(1) + valuesWithHeader.at(1) + '\n'};
+                            mapOfEntries[KEY] += entry;
+                            mapOfEntriesSizes[KEY] += entry.size();
+                        }
 
-                            mapOfEntries[KEY] += timeStampsWithHeader.at(0) + valuesWithHeader.at(0) + '\n' + timeStampsWithHeader.at(1) + valuesWithHeader.at(1) + '\n';
+                        // Keep track of buffer sizes.
+                        if (mapOfEntriesSizes[KEY] > TEN_MB) {
+                            std::cerr << argv[0] << ": Buffer for '" << KEY << "' has consumed " << mapOfEntriesSizes[KEY] << "/" << TEN_MB << " bytes; dumping data to disk."<< std::endl; // LCOV_EXCL_LINE
+                            fileWriter(); // LCOV_EXCL_LINE
                         }
                     }
                 }
             }
-            for(auto entries : mapOfFilenames) {
-                std::cerr << argv[0] << " writing '" << entries.second << ".csv'...";
-                std::fstream fout(entries.second + ".csv", std::ios::out|std::ios::binary|std::ios::trunc);
-                if (fout.good() && mapOfEntries.count(entries.first)) {
-                    const std::string tmp{mapOfEntries[entries.first]};
-                    fout.write(tmp.c_str(), static_cast<std::streamsize>(tmp.size()));
-                }
-                fout.close();
-                std::cerr << " done." << std::endl;
-            }
+            // Clear buffer at the end.
+            fileWriter();
         }
         else {
             std::cerr << argv[0] << ": Recording '" << commandlineArguments["rec"] << "' not found." << std::endl;
@@ -17163,20 +18776,11 @@ inline int32_t cluon_rec2csv(int32_t argc, char **argv) {
 
 #endif
 /*
- * Copyright (C) 2018  Christian Berger
+ * Copyright (C) 2017-2018  Christian Berger
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 // This test for a compiler definition is necessary to preserve single-file, header-only compability.

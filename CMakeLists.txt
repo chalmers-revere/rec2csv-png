@@ -20,7 +20,7 @@ project(rec2csv+png)
 ################################################################################
 # Defining the relevant versions of OpenDLV Standard Message Set and libcluon.
 set(OPENDLV_STANDARD_MESSAGE_SET opendlv-standard-message-set-v0.9.6.odvd)
-set(CLUON_COMPLETE cluon-complete-v0.0.107.hpp)
+set(CLUON_COMPLETE cluon-complete-v0.0.145.hpp)
 
 ################################################################################
 # Set the search path for .cmake files.
@@ -31,8 +31,16 @@ set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}" ${CMAKE_MODULE_PATH})
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-# Build a static binary.
-set(CMAKE_EXE_LINKER_FLAGS "-static-libgcc -static-libstdc++")
+IF(NOT(APPLE))
+  # Build a static binary.
+  set(CMAKE_EXE_LINKER_FLAGS "-static-libgcc -static-libstdc++")
+ENDIF()
+
+if("${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
+  set(CMAKE_CXX_FLAGS "-D_DARWIN_C_SOURCE=1 ")
+  set(CMAKE_OSX_SYSROOT /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk)
+endif()
+
 # Add further warning levels.
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
     -D_XOPEN_SOURCE=700 \
@@ -48,18 +56,41 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
     -Wunused -Wunused-function -Wunused-label -Wunused-parameter -Wunused-but-set-parameter -Wunused-but-set-variable \
     -Wunused-value -Wunused-variable -Wunused-result \
     -Wmissing-field-initializers -Wmissing-format-attribute -Wmissing-include-dirs -Wmissing-noreturn")
+
+if("${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
+  set(CMAKE_CXX_FLAGS "-D_DARWIN_C_SOURCE=1 ")
+  set(CMAKE_OSX_SYSROOT /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk)
+endif()
+
 # Threads are necessary for linking the resulting binaries as UDPReceiver is running in parallel.
 set(THREADS_PREFER_PTHREAD_FLAG ON)
-find_package(Threads REQUIRED)
+IF(APPLE)
+    set(CMAKE_THREAD_LIBS_INIT "-lpthread")
+    set(CMAKE_HAVE_THREADS_LIBRARY 1)
+    set(CMAKE_USE_WIN32_THREADS_INIT 0)
+    set(CMAKE_USE_PTHREADS_INIT 1)
+ELSE()
+    find_package(Threads REQUIRED)
+    set(LIBRARIES ${LIBRARIES} Threads::Threads)
+ENDIF()
 
 ################################################################################
 # Extract cluon-msc from cluon-complete.hpp.
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/cluon-msc
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMAND ${CMAKE_COMMAND} -E create_symlink ${CMAKE_CURRENT_SOURCE_DIR}/src/${CLUON_COMPLETE} ${CMAKE_BINARY_DIR}/cluon-complete.hpp
-    COMMAND ${CMAKE_COMMAND} -E create_symlink ${CMAKE_BINARY_DIR}/cluon-complete.hpp ${CMAKE_BINARY_DIR}/cluon-complete.cpp
-    COMMAND ${CMAKE_CXX_COMPILER} -o ${CMAKE_BINARY_DIR}/cluon-msc ${CMAKE_BINARY_DIR}/cluon-complete.cpp -std=c++14 -pthread -D HAVE_CLUON_MSC
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/${CLUON_COMPLETE})
+IF(APPLE)
+  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/cluon-msc
+      WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+      COMMAND ${CMAKE_COMMAND} -E create_symlink ${CMAKE_CURRENT_SOURCE_DIR}/src/${CLUON_COMPLETE} ${CMAKE_BINARY_DIR}/cluon-complete.hpp
+      COMMAND ${CMAKE_COMMAND} -E create_symlink ${CMAKE_BINARY_DIR}/cluon-complete.hpp ${CMAKE_BINARY_DIR}/cluon-complete.cpp
+      COMMAND ${CMAKE_CXX_COMPILER} -o ${CMAKE_BINARY_DIR}/cluon-msc ${CMAKE_BINARY_DIR}/cluon-complete.cpp -isysroot ${CMAKE_OSX_SYSROOT} -std=c++14 -pthread -D_DARWIN_C_SOURCE=1 -D HAVE_CLUON_MSC
+      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/${CLUON_COMPLETE})
+ELSE()
+  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/cluon-msc
+      WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+      COMMAND ${CMAKE_COMMAND} -E create_symlink ${CMAKE_CURRENT_SOURCE_DIR}/src/${CLUON_COMPLETE} ${CMAKE_BINARY_DIR}/cluon-complete.hpp
+      COMMAND ${CMAKE_COMMAND} -E create_symlink ${CMAKE_BINARY_DIR}/cluon-complete.hpp ${CMAKE_BINARY_DIR}/cluon-complete.cpp
+      COMMAND ${CMAKE_CXX_COMPILER} -o ${CMAKE_BINARY_DIR}/cluon-msc ${CMAKE_BINARY_DIR}/cluon-complete.cpp -std=c++14 -pthread -D HAVE_CLUON_MSC
+      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/${CLUON_COMPLETE})
+ENDIF()
 
 ################################################################################
 # Generate opendlv-standard-message-set.hpp from ${OPENDLV_STANDARD_MESSAGE_SET} file.
@@ -73,8 +104,6 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 ################################################################################
 # Gather all object code first to avoid double compilation.
-set(LIBRARIES Threads::Threads)
-
 if(UNIX)
     if(NOT "${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
         find_package(LibRT REQUIRED)

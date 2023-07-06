@@ -18,7 +18,8 @@
 FIND_PATH(YUV_INCLUDE_DIR
           NAMES libyuv.h
           PATHS /usr/local/include/
-                /usr/include/)
+                /usr/include/
+                /Users/berger/Desktop/rec2csv-png/usr/include/)
 MARK_AS_ADVANCED(YUV_INCLUDE_DIR)
 FIND_LIBRARY(YUV_LIBRARY
              NAMES yuv
@@ -28,7 +29,8 @@ FIND_LIBRARY(YUV_LIBRARY
                     /usr/lib/x86_64-linux-gnu/
                     /usr/local/lib64/
                     /usr/lib64/
-                    /usr/lib/)
+                    /usr/lib/
+                    /Users/berger/Desktop/rec2csv-png/usr/lib/)
 MARK_AS_ADVANCED(YUV_LIBRARY)
 
 ###########################################################################

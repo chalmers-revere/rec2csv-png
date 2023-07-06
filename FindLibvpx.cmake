@@ -18,7 +18,8 @@
 FIND_PATH(VPX_INCLUDE_DIR
           NAMES vpx/vpx_encoder.h
           PATHS /usr/local/include/
-                /usr/include/)
+                /usr/include/
+                /Users/berger/Desktop/rec2csv-png/usr/include/)
 MARK_AS_ADVANCED(VPX_INCLUDE_DIR)
 FIND_LIBRARY(VPX_LIBRARY
              NAMES vpx
@@ -28,7 +29,8 @@ FIND_LIBRARY(VPX_LIBRARY
                     /usr/lib/x86_64-linux-gnu/
                     /usr/local/lib64/
                     /usr/lib64/
-                    /usr/lib/)
+                    /usr/lib/
+                    /Users/berger/Desktop/rec2csv-png/usr/lib/)
 MARK_AS_ADVANCED(VPX_LIBRARY)
 
 ###########################################################################

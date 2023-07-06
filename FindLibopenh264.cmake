@@ -18,7 +18,8 @@
 FIND_PATH(OPENH264_INCLUDE_DIR
           NAMES wels/codec_api.h
           PATHS /usr/local/include/
-                /usr/include/)
+                /usr/include/
+                /Users/berger/Desktop/rec2csv-png/usr/include/)
 MARK_AS_ADVANCED(OPENH264_INCLUDE_DIR)
 FIND_LIBRARY(OPENH264_LIBRARY
              NAMES openh264
@@ -28,7 +29,8 @@ FIND_LIBRARY(OPENH264_LIBRARY
                     /usr/lib/x86_64-linux-gnu/
                     /usr/local/lib64/
                     /usr/lib64/
-                    /usr/lib/)
+                    /usr/lib/
+                    /Users/berger/Desktop/rec2csv-png/usr/lib/)
 MARK_AS_ADVANCED(OPENH264_LIBRARY)
 
 ###########################################################################
